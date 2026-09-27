@@ -1,0 +1,345 @@
+{
+  "root_directory": "C:\\Users\\PMLS\\Downloads\\OnBoarding\\benchmarks\\CallBridge",
+  "total_python_files": 6,
+  "total_lines_of_code": 1083,
+  "detected_frameworks": [
+    "fastapi"
+  ],
+  "entry_candidates": [
+    "app.py",
+    "test_mic_caller.py",
+    "tts_player.py"
+  ],
+  "requirements_declared": [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.28.0",
+    "pydantic>=2.6.0",
+    "python-dotenv>=1.0.0",
+    "openai>=1.14.0",
+    "assemblyai>=0.23.0",
+    "edge-tts>=6.1.10",
+    "sounddevice>=0.4.6",
+    "numpy>=1.26.0",
+    "scipy>=1.12.0",
+    "requests>=2.31.0",
+    "websockets>=12.0"
+  ],
+  "readme_preview": "# CallBridge \ud83c\udf09\ud83d\udcde\n\n> **Autonomous Outbound Negotiation & Phone Agent with Human-in-the-Loop Safeguards**\n\nCallBridge is an AI agent that places outbound phone calls to businesses (dental clinics, restaurants, customer service) on behalf of a human client. When negotiation encounters constraint conflicts (unwanted hours, unexpected fees, or requests for sensitive info), CallBridge **stalls the receptionist live on the phone**, escalates a **Red Decision Card** to the human client, drafts a verified counter-offer, and speaks it back to complete the booking.\n\n---\n\n## \ud83c\udf1f Key Features\n\n* **Natural Goal Parsing**: Takes natural language instructions (e.g., *\"Book a dental checkup for Tuesday before 4 PM, max $30, never share credit card\"*) and extracts structured limits and opening statements.\n* **Autonomous Outbound Caller**: Places the outbound call, introduces the client's request, and converses with the business receptionist.\n* **Dealbreaker Interception**: Immediately catches constraint violations and forbidden disclosures.\n* **Zero-Drop Stalling Phrase**: Speaks an immediate natural stalling line (*\"Hold on a moment while I confirm that with my client...\"*) to keep the receptionist waiting.\n* **Human-in-the-Loop Escalation**: Provides smart 1-click counter-options and custom instruction input.\n* **Bilingual Staging**: Generates verified English audio to speak while previewing translations in the client's preferred language (e.g. Urdu, Spanish).\n* **Dynamic Negotiation Memory**: Tracks approved client overrides throughout the conversation so agreed terms are recognized as successes.\n* **Post-Call Audit & Summary Report**: Produces a structured report card with confirmed points, unresolved items, and outcome headlines.\n\n---\n\n## \ud83d\ude80 Quickstart\n\n### 1. Installation\n\nClone the repository and install dependencies:\n```bash\ngit clone https://github.com/Shariq-duet/CallBridge.git\ncd CallBridge\npip install -r requirements.txt # or install fastapi, uvicorn, openai, assemblyai, edge-tts, sounddevice, scipy\n```\n\n### 2. Configure Environment Variables\n\nCreate a `.env` file based on `.env.example`:\n```ini\nGROQ_API_KEY=your_groq_api_key\nGROQ_MODEL=openai/gpt-oss-20b\nASSEMBLYAI_API_KEY=your_assemblyai_api_key\n```\n\n### 3. Start the Backend Server\n\n```bash\nuvicorn app:app --reload --port 8000\n```\nInteractive Swagger API documentation will be available at `http://127.0.0.1:8000/docs`.\n\n### 4. Run the Interactive Roleplay Test Client\n\nSimulate the business receptionist and talk to CallBridge in real-time using your PC microphone and speakers:\n```bash\npython test_mic_caller.py\n```\n\n---\n\n## \ud83d\udcda Documentation for Frontend Developers\n\nSee [FRONTEND_INTEGRATION_GUIDE.md](FRONTEND_INTEGRATION_GUIDE.md) and [API_CONTRACT.md](API_CONTRACT.md) for full REST & WebSocket endpoint specifications, state machine transitions, and React/Next.js integration blueprints.\n\n---\n\n## \ud83d\udcc4 License\nMIT License\n",
+  "files": [
+    {
+      "path": "app.py",
+      "lines_of_code": 345,
+      "imports": [
+        "uuid",
+        "typing",
+        "fastapi",
+        "fastapi.middleware.cors",
+        "models",
+        "engine"
+      ],
+      "classes": [],
+      "functions": [
+        {
+          "name": "create_session",
+          "line": 34,
+          "arguments": [
+            "request"
+          ],
+          "docstring": ""
+        },
+        {
+          "name": "get_session_status",
+          "line": 72,
+          "arguments": [
+            "session_id"
+          ],
+          "docstring": ""
+        },
+        {
+          "name": "evaluate_turn",
+          "line": 87,
+          "arguments": [
+            "session_id",
+            "turn"
+          ],
+          "docstring": ""
+        },
+        {
+          "name": "handle_user_action",
+          "line": 179,
+          "arguments": [
+            "session_id",
+            "action"
+          ],
+          "docstring": ""
+        },
+        {
+          "name": "approve_and_speak",
+          "line": 203,
+          "arguments": [
+            "session_id"
+          ],
+          "docstring": ""
+        },
+        {
+          "name": "complete_call",
+          "line": 223,
+          "arguments": [
+            "session_id"
+          ],
+          "docstring": ""
+        },
+        {
+          "name": "get_available_models",
+          "line": 240,
+          "arguments": [],
+          "docstring": ""
+        }
+      ],
+      "has_entry_hook": false
+    },
+    {
+      "path": "engine.py",
+      "lines_of_code": 260,
+      "imports": [
+        "os",
+        "json",
+        "openai",
+        "dotenv",
+        "models",
+        "io",
+        "assemblyai"
+      ],
+      "classes": [],
+      "functions": [
+        {
+          "name": "get_model",
+          "line": 32,
+          "arguments": [],
+          "docstring": ""
+        },
+        {
+          "name": "extract_rules_from_prompt",
+          "line": 35,
+          "arguments": [
+            "prompt",
+            "user_language"
+          ],
+          "docstring": ""
+        },
+        {
+          "name": "evaluate_caller_turn",
+          "line": 71,
+          "arguments": [
+            "caller_text",
+            "session"
+          ],
+          "docstring": ""
+        },
+        {
+          "name": "generate_staged_draft",
+          "line": 151,
+          "arguments": [
+            "session",
+            "action"
+          ],
+          "docstring": ""
+        },
+        {
+          "name": "generate_call_summary",
+          "line": 191,
+          "arguments": [
+            "session"
+          ],
+          "docstring": ""
+        },
+        {
+          "name": "transcribe_audio",
+          "line": 229,
+          "arguments": [
+            "audio_input",
+            "filename"
+          ],
+          "docstring": "Transcribes audio using AssemblyAI (with Groq Whisper as fallback)."
+        }
+      ],
+      "has_entry_hook": false
+    },
+    {
+      "path": "list_models.py",
+      "lines_of_code": 24,
+      "imports": [
+        "os",
+        "openai",
+        "dotenv"
+      ],
+      "classes": [],
+      "functions": [],
+      "has_entry_hook": false
+    },
+    {
+      "path": "models.py",
+      "lines_of_code": 125,
+      "imports": [
+        "typing",
+        "pydantic"
+      ],
+      "classes": [
+        {
+          "name": "IncomingUserRequest",
+          "line": 4,
+          "bases": [
+            "BaseModel"
+          ],
+          "methods": [],
+          "docstring": ""
+        },
+        {
+          "name": "RuleConstraint",
+          "line": 12,
+          "bases": [
+            "BaseModel"
+          ],
+          "methods": [],
+          "docstring": ""
+        },
+        {
+          "name": "ExtractedRules",
+          "line": 26,
+          "bases": [
+            "BaseModel"
+          ],
+          "methods": [],
+          "docstring": ""
+        },
+        {
+          "name": "TurnDecision",
+          "line": 52,
+          "bases": [
+            "BaseModel"
+          ],
+          "methods": [
+            "ensure_list"
+          ],
+          "docstring": ""
+        },
+        {
+          "name": "UserDecisionAction",
+          "line": 88,
+          "bases": [
+            "BaseModel"
+          ],
+          "methods": [],
+          "docstring": ""
+        },
+        {
+          "name": "StagedResponse",
+          "line": 97,
+          "bases": [
+            "BaseModel"
+          ],
+          "methods": [],
+          "docstring": ""
+        },
+        {
+          "name": "FinalSummary",
+          "line": 108,
+          "bases": [
+            "BaseModel"
+          ],
+          "methods": [],
+          "docstring": ""
+        },
+        {
+          "name": "IncomingCallerTurn",
+          "line": 124,
+          "bases": [
+            "BaseModel"
+          ],
+          "methods": [],
+          "docstring": ""
+        }
+      ],
+      "functions": [
+        {
+          "name": "ensure_list",
+          "line": 83,
+          "arguments": [
+            "cls",
+            "v"
+          ],
+          "docstring": ""
+        }
+      ],
+      "has_entry_hook": false
+    },
+    {
+      "path": "test_mic_caller.py",
+      "lines_of_code": 261,
+      "imports": [
+        "sys",
+        "os",
+        "time",
+        "io",
+        "json",
+        "asyncio",
+        "requests",
+        "numpy",
+        "sounddevice",
+        "scipy.io",
+        "tts_player"
+      ],
+      "classes": [],
+      "functions": [
+        {
+          "name": "record_audio",
+          "line": 29,
+          "arguments": [
+            "duration_seconds"
+          ],
+          "docstring": "Records audio from microphone for N seconds and returns WAV bytes."
+        },
+        {
+          "name": "create_dentist_session",
+          "line": 49,
+          "arguments": [],
+          "docstring": "Creates a dentist appointment booking session."
+        },
+        {
+          "name": "create_custom_session",
+          "line": 74,
+          "arguments": [
+            "prompt",
+            "lang",
+            "mode"
+          ],
+          "docstring": ""
+        }
+      ],
+      "has_entry_hook": true
+    },
+    {
+      "path": "tts_player.py",
+      "lines_of_code": 68,
+      "imports": [
+        "os",
+        "uuid",
+        "asyncio",
+        "subprocess",
+        "edge_tts"
+      ],
+      "classes": [],
+      "functions": [
+        {
+          "name": "play_audio_file",
+          "line": 7,
+          "arguments": [
+            "file_path"
+          ],
+          "docstring": "Plays audio via Windows PowerShell Media Player, waiting for full playback duration."
+        }
+      ],
+      "has_entry_hook": true
+    }
+  ]
+}

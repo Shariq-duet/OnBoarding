@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CallBridge — Architecture Tour</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            surface:      '#070b14',
+            card:         '#0d1321',
+            'card-hover': '#111827',
+            border:       '#1a2235',
+            subtle:       '#1e2d45',
+            muted:        '#4b5e7a',
+            accent:       '#4f8ef7',
+            'accent-dim': '#1a2f5e',
+            teal:         '#0fb8a0',
+            'teal-dim':   '#0a3630',
+            rose:         '#f4516a',
+            'rose-dim':   '#3d1220',
+            amber:        '#f5a623',
+            'amber-dim':  '#3d2a08',
+            violet:       '#a78bfa',
+            'violet-dim': '#2e1f5e',
+            ink:          '#dde6f0',
+            faint:        '#8899b0',
+          },
+          fontFamily: {
+            sans: ['"Inter"', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', '"Fira Mono"', 'monospace'],
+          },
+        }
+      }
+    }
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark-dimmed.min.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+
+  <!-- svg-pan-zoom for interactive diagram drag + scroll-zoom -->
+  <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+
+  <style>
+    html { scroll-behavior: smooth; }
+    body { background: #070b14; }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: #070b14; }
+    ::-webkit-scrollbar-thumb { background: #1a2235; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #1e2d45; }
+
+    /* ── Top nav ── */
+    #topnav { backdrop-filter: blur(12px); background: rgba(7,11,20,0.85); }
+    .nav-link { position: relative; }
+    .nav-link::after {
+      content: ''; position: absolute; bottom: -2px; left: 0; right: 0;
+      height: 2px; background: #4f8ef7; border-radius: 2px;
+      transform: scaleX(0); transition: transform 0.2s ease;
+    }
+    .nav-link.active::after,
+    .nav-link:hover::after { transform: scaleX(1); }
+    .nav-link.active { color: #dde6f0; }
+
+    /* ── Description cards accent line ── */
+    .desc-card { border-left: 3px solid transparent; }
+    .desc-card-teal  { border-left-color: #0fb8a0; }
+    .desc-card-blue  { border-left-color: #4f8ef7; }
+    .desc-card-rose  { border-left-color: #f4516a; }
+
+    /* ── Diagram container — pan/zoom wrapper ── */
+    #diagram-container {
+      width: 100%;
+      /* height is set dynamically by JS after SVG renders — no min-height here */
+      position: relative;
+      overflow: hidden;
+      border-radius: 0.75rem;
+      background: #0a0f1c;
+      cursor: grab;
+    }
+    #diagram-container:active { cursor: grabbing; }
+    #diagram-container svg {
+      display: block;
+      width: 100% !important;
+      max-width: none !important;
+      height: 100% !important;
+    }
+    /* Diagram toolbar */
+    .diagram-toolbar {
+      position: absolute; top: 12px; right: 12px; z-index: 10;
+      display: flex; gap: 6px;
+    }
+    .diagram-btn {
+      width: 30px; height: 30px;
+      background: #0d1321; border: 1px solid #1a2235; border-radius: 6px;
+      color: #8899b0; font-size: 16px; line-height: 30px; text-align: center;
+      cursor: pointer; transition: background 0.15s, color 0.15s; user-select: none;
+    }
+    .diagram-btn:hover { background: #1a2235; color: #dde6f0; }
+    .diagram-hint {
+      position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+      font-size: 11px; color: #4b5e7a; pointer-events: none; white-space: nowrap;
+    }
+
+    /* ── Fade-in ── */
+    .section-fade { opacity: 0; transform: translateY(14px); transition: opacity 0.4s ease, transform 0.4s ease; }
+    .section-fade.visible { opacity: 1; transform: none; }
+    #hero.section-fade { opacity: 1; transform: none; }
+
+    /* ── Flow cards — vertical stack ── */
+    .flow-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    .flow-card {
+      background: #0d1321;
+      border: 1px solid #1a2235;
+      border-radius: 14px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      margin-bottom: 3px;
+    }
+    /* connector line between cards */
+    .flow-list > .flow-card:not(:last-child) {
+      margin-bottom: 0;
+      border-bottom-left-radius: 0;
+      border-bottom-right-radius: 0;
+      border-bottom: none;
+    }
+    .flow-list > .flow-card:not(:first-child) {
+      border-top-left-radius: 0;
+      border-top-right-radius: 0;
+    }
+    .flow-card-accent {
+      height: 3px;
+      background: linear-gradient(90deg, #0fb8a0, #4f8ef7);
+      flex-shrink: 0;
+    }
+    .flow-card-body { padding: 18px; display: flex; flex-direction: column; gap: 10px; flex: 1; }
+    .flow-card-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .step-badge {
+      font-size: 10px; font-weight: 700; font-family: 'JetBrains Mono', monospace;
+      padding: 2px 8px; border-radius: 999px;
+      background: rgba(15,184,160,0.12); color: #0fb8a0; border: 1px solid rgba(15,184,160,0.25);
+    }
+    .flow-card-sig { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #4b5e7a; }
+    .sig-module { color: #8899b0; }
+    .sig-arrow  { color: #4b5e7a; margin: 0 2px; }
+    .sig-symbol { color: #4f8ef7; }
+    .flow-card-name { font-size: 15px; font-weight: 700; color: #dde6f0; line-height: 1.3; margin: 0; }
+    .flow-card-mech { font-size: 12px; color: #8899b0; line-height: 1.6; margin: 0; }
+
+    /* IN / OUT contract blocks */
+    .contracts-wrap { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
+    .contract-block {
+      display: flex; align-items: flex-start; gap: 8px;
+      background: #060a12; border: 1px solid #1a2235; border-radius: 8px;
+      padding: 8px 10px; font-size: 11px; font-family: 'JetBrains Mono', monospace;
+    }
+    .contract-label { font-weight: 700; flex-shrink: 0; }
+    .contract-in  { color: #0fb8a0; }
+    .contract-out { color: #4f8ef7; }
+    .contract-text { color: #8899b0; line-height: 1.5; }
+
+    /* Code anchor block */
+    .anchor-wrap { border-radius: 8px; overflow: hidden; border: 1px solid #1a2235; margin-top: 2px; }
+    .anchor-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 12px; background: #0a0f1c; border-bottom: 1px solid #1a2235;
+    }
+    .anchor-icon    { font-size: 10px; color: #4b5e7a; font-family: monospace; }
+    .anchor-caption { font-size: 10px; font-family: 'JetBrains Mono', monospace; color: #8899b0; flex: 1; }
+    .anchor-lang    { font-size: 9px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #4b5e7a; }
+    .anchor-pre     { margin: 0; padding: 10px 12px; background: #060a12; overflow-x: auto; font-size: 11px; }
+
+    /* ── Card highlight pulse on node click ── */
+    @keyframes card-ping {
+      0%   { box-shadow: 0 0 0 0 rgba(79,142,247,0.7); }
+      60%  { box-shadow: 0 0 0 8px rgba(79,142,247,0.0); }
+      100% { box-shadow: 0 0 0 0 rgba(79,142,247,0.0); }
+    }
+    .stage-highlight {
+      animation: card-ping 0.75s ease-out forwards;
+      outline: 2px solid #4f8ef7; outline-offset: 3px;
+    }
+
+    /* ── hljs ── */
+    .hljs { background: #060a12 !important; border-radius: 0 0 0.5rem 0.5rem; }
+
+    /* ── Copy flash ── */
+    .copy-btn.copied { background: #0fb8a0 !important; color: #070b14 !important; border-color: #0fb8a0 !important; }
+
+    /* ── Quick Run button glow ── */
+    .btn-run { box-shadow: 0 0 0 0 rgba(79,142,247,0.5); transition: box-shadow 0.3s; }
+    .btn-run:hover { box-shadow: 0 0 16px 2px rgba(79,142,247,0.35); }
+
+    /* ── Section accent bar ── */
+    .section-bar { display: inline-block; width: 4px; border-radius: 4px; height: 22px; flex-shrink: 0; }
+
+    /* ── Empty-state ── */
+    .empty-state-banner {
+      display: none; position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%);
+      z-index: 200; background: #0d1321; border: 1px solid #4f8ef7; border-radius: 0.75rem;
+      padding: 0.85rem 1.5rem; color: #dde6f0; font-size: 0.8rem; line-height: 1.5;
+      max-width: 480px; width: calc(100% - 3rem); text-align: center;
+      box-shadow: 0 4px 32px rgba(0,0,0,0.7);
+    }
+    .empty-state-banner.visible { display: block; }
+
+    @media (max-width: 768px) {
+      #topnav nav { display: none; }
+      h1 { font-size: 2rem !important; }
+    }
+  </style>
+</head>
+<body class="font-sans text-ink bg-surface min-h-screen">
+
+<div id="empty-state" class="empty-state-banner" role="alert">
+  <strong style="color:#4f8ef7">Page not generated yet.</strong><br>
+  Run <code style="background:#1a2235;padding:1px 6px;border-radius:4px;font-size:11px">python visualizer.py repo_blueprint.json</code> then refresh.
+</div>
+
+<!-- ══════════════════════════════════════════════ TOP NAV -->
+<header id="topnav" class="fixed top-0 left-0 right-0 z-50 border-b border-border">
+  <div class="max-w-7xl mx-auto px-6 h-14 flex items-center gap-6">
+
+    <!-- Logo + name -->
+    <a href="#hero" class="flex items-center gap-2.5 shrink-0">
+      <div class="w-7 h-7 rounded-lg bg-accent-dim border border-accent/30 flex items-center justify-center">
+        <svg class="w-4 h-4 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/>
+        </svg>
+      </div>
+      <span class="font-bold text-sm text-ink truncate max-w-[180px]">CallBridge</span>
+      <span class="text-[10px] font-mono text-muted bg-subtle px-1.5 py-0.5 rounded border border-border hidden sm:inline">callbridge</span>
+    </a>
+
+    <!-- Centre nav -->
+    <nav class="flex-1 flex items-center justify-center gap-1">
+      <a href="#hero"       class="nav-link px-3 py-1.5 text-sm text-faint hover:text-ink transition-colors rounded">Overview</a>
+      <a href="#entrypoint" class="nav-link px-3 py-1.5 text-sm text-faint hover:text-ink transition-colors rounded">Entry Point</a>
+      <a href="#diagram"    class="nav-link px-3 py-1.5 text-sm text-faint hover:text-ink transition-colors rounded">Architecture</a>
+      <a href="#flow"       class="nav-link px-3 py-1.5 text-sm text-faint hover:text-ink transition-colors rounded">Execution Flow</a>
+      <a href="#models"     class="nav-link px-3 py-1.5 text-sm text-faint hover:text-ink transition-colors rounded">Data Models</a>
+      <a href="#filesystem" class="nav-link px-3 py-1.5 text-sm text-faint hover:text-ink transition-colors rounded">File Structure</a>
+      <a href="#playbook"   class="nav-link px-3 py-1.5 text-sm text-faint hover:text-ink transition-colors rounded">Playbook</a>
+    </nav>
+
+    <!-- Quick Run CTA -->
+    <a href="#playbook" class="btn-run shrink-0 flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-accent/15 border border-accent/30 text-accent text-xs font-semibold hover:bg-accent/25 transition-colors">
+      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 3l14 9-14 9V3z"/>
+      </svg>
+      Quick Run
+    </a>
+  </div>
+</header>
+
+<!-- ══════════════════════════════════════════════ MAIN CONTENT -->
+<main class="pt-14">
+
+  <!-- ─────────────────────────────────────── HERO / OVERVIEW -->
+  <section id="hero" class="section-fade border-b border-border px-6 py-16 lg:px-16">
+    <div class="max-w-6xl mx-auto">
+
+      <!-- Archetype + version row -->
+      <div class="flex items-center gap-3 mb-5 flex-wrap">
+        <span class="text-[11px] font-bold uppercase tracking-widest text-accent bg-accent-dim px-3 py-1 rounded-full border border-accent/20">api_server</span>
+        <span class="text-[11px] font-mono text-muted bg-subtle px-2 py-0.5 rounded border border-border">v1.0.0</span>
+      </div>
+
+      <!-- Title -->
+      <h1 class="text-5xl font-extrabold text-ink mb-4 leading-tight tracking-tight">CallBridge</h1>
+
+      <!-- Summary -->
+      <p class="text-lg text-faint leading-relaxed max-w-3xl mb-10">Autonomous outbound phone-negotiation agent that places calls on behalf of a human client, intercepts constraint violations in real time, stalls the receptionist with a natural holding phrase, escalates a Red Decision Card to the human, and speaks an approved counter-offer back — all through a FastAPI backend with WebSocket and REST interfaces.</p>
+
+      <!-- Description cards — coloured accent borders + icons -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-5 mb-10">
+
+        <div class="desc-card desc-card-teal bg-card rounded-xl p-5 border border-border hover:border-teal/40 transition-colors">
+          <div class="flex items-center gap-2 mb-3">
+            <svg class="w-4 h-4 text-teal shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <p class="text-[10px] font-bold uppercase tracking-widest text-teal">Primary Purpose</p>
+          </div>
+          <p class="text-sm text-faint leading-relaxed">CallBridge solves the problem of high-stakes, constraint-bound phone negotiations that humans find stressful or error-prone — such as booking medical appointments under time and budget limits, placing food orders with specific restrictions, or negotiating service terms. The system acts as a fully autonomous AI caller: it accepts a natural-language goal from the user, parses it into a structured rule-set (budgets, time windows, forbidden disclosures), and conducts the entire outbound conversation on the user&#x27;s behalf. The real-world value is that it eliminates the cognitive load of live negotiation while guaranteeing that user-defined hard limits are never breached without explicit human sign-off.</p>
+        </div>
+
+        <div class="desc-card desc-card-blue bg-card rounded-xl p-5 border border-border hover:border-accent/40 transition-colors">
+          <div class="flex items-center gap-2 mb-3">
+            <svg class="w-4 h-4 text-accent shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+            </svg>
+            <p class="text-[10px] font-bold uppercase tracking-widest text-accent">Control Flow & Architecture</p>
+          </div>
+          <p class="text-sm text-faint leading-relaxed">Requests enter through a FastAPI server (app.py) which maintains an in-memory session store (sessiondb). On session creation, the user&#x27;s raw prompt is forwarded to engine.extract_rules_from_prompt(), which calls the Groq LLM with a structured system prompt and json_object response format to produce an ExtractedRules Pydantic model. During the call, each receptionist utterance arrives either as text via POST /evaluate-turn or as raw audio via POST /audio-turn — the audio path first passes through engine.transcribe_audio() (AssemblyAI primary, Groq Whisper fallback) before joining the same evaluation path. engine.evaluate_caller_turn() then builds a context window from the last 8 transcript turns plus the decision ledger and sends it to the LLM, which returns a TurnDecision. Depending on that decision, the session transitions to IN_PROGRESS (safe reply), DECISION_REQUIRED (dealbreaker), or COMPLETED (call confirmed). A parallel WebSocket endpoint (/ws/call/{session_id}) mirrors the full state machine for streaming frontends using named JSON events.</p>
+        </div>
+
+        <div class="desc-card desc-card-rose bg-card rounded-xl p-5 border border-border hover:border-rose/40 transition-colors">
+          <div class="flex items-center gap-2 mb-3">
+            <svg class="w-4 h-4 text-rose shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+            </svg>
+            <p class="text-[10px] font-bold uppercase tracking-widest text-rose">Invariants & Edge Cases</p>
+          </div>
+          <p class="text-sm text-faint leading-relaxed">The most critical invariant is the dealbreaker interception: if the LLM sets is_dealbreaker=true, the session is immediately frozen at DECISION_REQUIRED and a stalling phrase is returned for the agent to speak aloud — the call cannot proceed until the human explicitly approves a counter-action via /user-action followed by /approve. An approved override is appended to the decision_ledger, and the LLM is explicitly instructed to treat ledger entries as authoritative — preventing previously approved alternatives from being re-flagged as violations. Audio transcription failures degrade gracefully: AssemblyAI errors are caught and logged, falling back to Groq Whisper; if both fail the endpoint returns a 500 with a structured error body rather than silently dropping the turn. TTS playback failures in tts_player.py are swallowed entirely (bare except pass) so a speaker driver issue never crashes the client. Empty or silent audio turns return a canned &#x27;couldn&#x27;t hear you&#x27; draft response without invoking the LLM, avoiding wasted inference on empty input.</p>
+        </div>
+
+      </div>
+
+      <!-- Hardware strip -->
+      <div class="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted mb-7 border-t border-border pt-5">
+        <span class="flex items-center gap-1.5">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/></svg>
+          CPU only
+        </span>
+        <span class="flex items-center gap-1.5">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+          ≥ 2 GB RAM
+        </span>
+        <span class="text-muted/70">CPU-only. Requires microphone and speakers for the interactive test client. Windows assumed for TTS playback via PowerShell MediaPlayer.</span>
+      </div>
+
+      <!-- Tech stack -->
+      <p class="text-[10px] font-bold uppercase tracking-widest text-muted mb-3">Core Technology Stack</p>
+      <div class="flex flex-wrap gap-2">
+        <span class="inline-block text-xs font-semibold font-mono px-2.5 py-1 rounded-md bg-subtle text-faint border border-border">Python <span class="text-muted">&gt;=3.10</span></span>
+<span class="inline-block text-xs font-semibold font-mono px-2.5 py-1 rounded-md bg-subtle text-faint border border-border">FastAPI <span class="text-muted">&gt;=0.110.0</span></span>
+<span class="inline-block text-xs font-semibold font-mono px-2.5 py-1 rounded-md bg-subtle text-faint border border-border">Uvicorn <span class="text-muted">&gt;=0.28.0</span></span>
+<span class="inline-block text-xs font-semibold font-mono px-2.5 py-1 rounded-md bg-subtle text-faint border border-border">Pydantic <span class="text-muted">&gt;=2.6.0</span></span>
+<span class="inline-block text-xs font-semibold font-mono px-2.5 py-1 rounded-md bg-subtle text-faint border border-border">OpenAI SDK (Groq) <span class="text-muted">&gt;=1.14.0</span></span>
+<span class="inline-block text-xs font-semibold font-mono px-2.5 py-1 rounded-md bg-subtle text-faint border border-border">AssemblyAI <span class="text-muted">&gt;=0.23.0</span></span>
+<span class="inline-block text-xs font-semibold font-mono px-2.5 py-1 rounded-md bg-subtle text-faint border border-border">Edge TTS <span class="text-muted">&gt;=6.1.10</span></span>
+<span class="inline-block text-xs font-semibold font-mono px-2.5 py-1 rounded-md bg-subtle text-faint border border-border">SoundDevice + SciPy <span class="text-muted">&gt;=0.4.6 / &gt;=1.12.0</span></span>
+<span class="inline-block text-xs font-semibold font-mono px-2.5 py-1 rounded-md bg-subtle text-faint border border-border">python-dotenv <span class="text-muted">&gt;=1.0.0</span></span>
+<span class="inline-block text-xs font-semibold font-mono px-2.5 py-1 rounded-md bg-subtle text-faint border border-border">websockets <span class="text-muted">&gt;=12.0</span></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────── ENTRY POINT -->
+  <section id="entrypoint" class="section-fade border-b border-border px-6 py-12 lg:px-16">
+    <div class="max-w-6xl mx-auto">
+      <div class="flex items-center gap-3 mb-6">
+        <span class="section-bar bg-amber"></span>
+        <h2 class="text-xl font-bold text-ink">Entry Point</h2>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+        <div class="bg-card border border-border rounded-xl p-4 hover:border-amber/30 transition-colors">
+          <p class="text-[10px] text-muted uppercase tracking-wider mb-2">Primary File</p>
+          <p class="font-mono text-sm text-amber font-semibold">app.py</p>
+        </div>
+        <div class="bg-card border border-border rounded-xl p-4 hover:border-accent/30 transition-colors">
+          <p class="text-[10px] text-muted uppercase tracking-wider mb-2">Execution Type</p>
+          <p class="font-mono text-sm text-ink">asgi_server</p>
+        </div>
+        <div class="bg-card border border-border rounded-xl p-4 sm:col-span-2 hover:border-teal/30 transition-colors">
+          <p class="text-[10px] text-muted uppercase tracking-wider mb-2">Run Command</p>
+          <p class="font-mono text-xs text-teal break-all">uvicorn app:app --reload --port 8000</p>
+        </div>
+      </div>
+      <div class="bg-card border border-border rounded-xl p-4 hover:border-border/80 transition-colors">
+        <p class="text-[10px] text-muted uppercase tracking-wider mb-2">Lifecycle Summary</p>
+        <p class="text-sm text-faint leading-relaxed">On startup, FastAPI registers all routes and CORS middleware. A client POSTs to /api/session/create with a natural-language prompt; engine.extract_rules_from_prompt() calls the Groq LLM to produce an ExtractedRules object stored in sessiondb. During the call, each receptionist utterance is evaluated by engine.evaluate_caller_turn() which returns a TurnDecision. Dealbreakers freeze the session at DECISION_REQUIRED; the human picks a counter-action via /user-action, engine.generate_staged_draft() produces a bilingual response, and /approve resumes the call. At call end, /complete calls engine.generate_call_summary() for a structured audit report.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────── ARCHITECTURE DIAGRAM -->
+  <section id="diagram" class="section-fade border-b border-border px-6 py-12 lg:px-16">
+    <div class="max-w-6xl mx-auto">
+      <div class="flex items-start justify-between gap-4 mb-5 flex-wrap">
+        <div>
+          <div class="flex items-center gap-3 mb-1">
+            <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-accent/15 border border-accent/30 text-accent text-xs font-bold font-mono flex-shrink-0">01</span>
+            <h2 class="text-2xl font-bold text-ink">Interactive Architecture Flowchart</h2>
+          </div>
+          <p class="text-sm text-muted ml-10">Click on any flowchart node to jump directly to its matching execution card</p>
+        </div>
+        <span class="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-teal/10 border border-teal/25 text-teal text-xs font-semibold flex-shrink-0">
+          <span class="w-1.5 h-1.5 rounded-full bg-teal inline-block"></span>
+          Clickable Nodes Active
+        </span>
+      </div>
+
+      <div class="border border-border rounded-xl overflow-hidden">
+        <div id="diagram-container">
+          <pre class="mermaid" id="mermaid-source" style="display:none">graph TD
+  subgraph Client["Client Entry Points"]
+    A1["test_mic_caller.py\n(interactive CLI)"]
+    A2["Frontend / Postman\n(HTTP + WebSocket)"]
+  end
+
+  subgraph API["app.py — FastAPI Server"]
+    B1["POST /api/session/create"]
+    B2["POST /{id}/evaluate-turn"]
+    B3["POST /{id}/audio-turn"]
+    B4["POST /{id}/user-action"]
+    B5["POST /{id}/approve"]
+    B6["POST /{id}/complete"]
+    B7["WS /ws/call/{id}"]
+  end
+
+  subgraph Engine["engine.py — LLM Orchestration"]
+    C1["extract_rules_from_prompt()\nGroq JSON mode"]
+    C2["evaluate_caller_turn()\nGroq JSON mode"]
+    C3["generate_staged_draft()\nGroq JSON mode"]
+    C4["generate_call_summary()\nGroq JSON mode"]
+    C5["transcribe_audio()\nAssemblyAI / Groq Whisper"]
+  end
+
+  subgraph TTS["tts_player.py"]
+    E1["speak_text_aloud()\nedge_tts"]
+    E2["play_audio_file()\nPowerShell"]
+  end
+
+  subgraph State["In-Memory State"]
+    F1["sessiondb: Dict"]
+  end
+
+  A1 -->|HTTP POST| B1
+  A2 -->|HTTP / WS| B1
+  A2 --> B7
+  B1 --> C1
+  C1 --> F1
+  B2 --> C2
+  B3 --> C5
+  C5 --> C2
+  C2 --> F1
+  B4 --> C3
+  C3 --> F1
+  B6 --> C4
+  B7 --> C2
+  B7 --> C3
+  B7 --> C4
+  A1 --> E1
+  E1 --> E2</pre>
+          <div id="diagram-svg-wrap" style="width:100%;height:100%"></div>
+          <div class="diagram-toolbar">
+            <div class="diagram-btn" id="btn-zoom-in"  title="Zoom in">+</div>
+            <div class="diagram-btn" id="btn-zoom-out" title="Zoom out">−</div>
+            <div class="diagram-btn" id="btn-reset"    title="Reset view">⊡</div>
+          </div>
+          <div class="diagram-hint">Scroll to zoom · Drag to pan</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────── EXECUTION PIPELINE -->
+  <section id="flow" class="section-fade border-b border-border px-6 py-12 lg:px-16">
+    <div class="max-w-6xl mx-auto">
+      <div class="flex items-start gap-3 mb-2">
+        <span class="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-teal/10 border border-teal/25 text-teal text-xs font-bold font-mono flex-shrink-0 mt-0.5">02</span>
+        <div>
+          <h2 class="text-2xl font-bold text-ink">Step-by-Step Execution Pipeline</h2>
+          <p class="text-sm text-muted mt-1">Lifecycle stages, module boundaries, IO contracts, and code anchors</p>
+        </div>
+      </div>
+      <div class="flow-list mt-6">
+        <div id="stage-flow-01" class="flow-card"><div class="flow-card-accent"></div><div class="flow-card-body"><div class="flow-card-header"><span class="step-badge">Step 1</span><span class="flow-card-sig"><span class="sig-module">app.py</span> <span class="sig-arrow">→</span> <span class="sig-symbol">create_session(request: IncomingUserRequest)</span></span></div><h3 class="flow-card-name">Session Creation &amp; Rule Extraction</h3><p class="flow-card-mech">Validates the raw prompt is non-empty, generates a UUID session ID (8 chars), calls engine.extract_rules_from_prompt() to parse constraints via LLM, then stores the full session dict in sessiondb.</p><div class="contracts-wrap"><div class="contract-block"><span class="contract-label contract-in">IN:</span><span class="contract-text">JSON body: { raw_prompt: str, user_language: str = &#x27;English&#x27;, mode: str = &#x27;delegate&#x27; | &#x27;assist&#x27; }</span></div><div class="contract-block"><span class="contract-label contract-out">OUT:</span><span class="contract-text">JSON: { status, session_id, flags: {is_configured, status, mode}, extracted_rules: ExtractedRules }</span></div></div><div class="anchor-wrap"><div class="anchor-header"><span class="anchor-icon">&lt;/&gt;</span><span class="anchor-caption">Anchor: app.py:34-69</span><span class="anchor-lang">PYTHON</span></div><pre class="anchor-pre"><code class="language-python">rules = extract_rules_from_prompt(clean_prompt, request.user_language)</code></pre></div></div></div>
+<div id="stage-flow-02" class="flow-card"><div class="flow-card-accent"></div><div class="flow-card-body"><div class="flow-card-header"><span class="step-badge">Step 2</span><span class="flow-card-sig"><span class="sig-module">engine.py</span> <span class="sig-arrow">→</span> <span class="sig-symbol">extract_rules_from_prompt(prompt: str, user_language: str) -&gt; ExtractedRules</span></span></div><h3 class="flow-card-name">LLM Goal Parsing</h3><p class="flow-card-mech">Builds a structured system prompt and calls client.chat.completions.create() with response_format={&#x27;type&#x27;: &#x27;json_object&#x27;} at temperature=0.1. Parses the returned JSON and validates through the ExtractedRules Pydantic model.</p><div class="contracts-wrap"><div class="contract-block"><span class="contract-label contract-in">IN:</span><span class="contract-text">Natural-language instruction string + user&#x27;s preferred language</span></div><div class="contract-block"><span class="contract-label contract-out">OUT:</span><span class="contract-text">ExtractedRules: { intent, target_business, action_details, opening_phrase, constraints: List[RuleConstraint], forbidden_disclosures, special_notes }</span></div></div><div class="anchor-wrap"><div class="anchor-header"><span class="anchor-icon">&lt;/&gt;</span><span class="anchor-caption">Anchor: engine.py:35-69</span><span class="anchor-lang">PYTHON</span></div><pre class="anchor-pre"><code class="language-python">response = client.chat.completions.create(model=get_model(), messages=[...], response_format={&quot;type&quot;: &quot;json_object&quot;}, temperature=0.1)</code></pre></div></div></div>
+<div id="stage-flow-03" class="flow-card"><div class="flow-card-accent"></div><div class="flow-card-body"><div class="flow-card-header"><span class="step-badge">Step 3</span><span class="flow-card-sig"><span class="sig-module">engine.py</span> <span class="sig-arrow">→</span> <span class="sig-symbol">evaluate_caller_turn(caller_text: str, session: dict) -&gt; TurnDecision</span></span></div><h3 class="flow-card-name">Receptionist Turn Evaluation</h3><p class="flow-card-mech">Assembles a context-rich system prompt including the last 8 history turns, decision ledger of approved overrides, constraint rules, and ASSIST-mode addendum if active. Calls Groq at temperature=0.1 with json_object response format.</p><div class="contracts-wrap"><div class="contract-block"><span class="contract-label contract-in">IN:</span><span class="contract-text">Receptionist speech string + full session dict (rules, transcript_history, decision_ledger, mode)</span></div><div class="contract-block"><span class="contract-label contract-out">OUT:</span><span class="contract-text">TurnDecision: { is_dealbreaker, call_completed, violation_parameter, violation_reason, immediate_stalling_phrase, suggested_user_options: List[str], draft_response }</span></div></div><div class="anchor-wrap"><div class="anchor-header"><span class="anchor-icon">&lt;/&gt;</span><span class="anchor-caption">Anchor: engine.py:71-149</span><span class="anchor-lang">PYTHON</span></div><pre class="anchor-pre"><code class="language-python">raw_json = json.loads(response.choices[0].message.content)
+return TurnDecision(**raw_json)</code></pre></div></div></div>
+<div id="stage-flow-04" class="flow-card"><div class="flow-card-accent"></div><div class="flow-card-body"><div class="flow-card-header"><span class="step-badge">Step 4</span><span class="flow-card-sig"><span class="sig-module">engine.py</span> <span class="sig-arrow">→</span> <span class="sig-symbol">transcribe_audio(audio_input, filename: str) -&gt; str</span></span></div><h3 class="flow-card-name">Audio Transcription</h3><p class="flow-card-mech">Primary path: AssemblyAI Transcriber (if ASSEMBLYAI_API_KEY is set). Fallback: Groq Whisper via client.audio.transcriptions.create() using model=&#x27;whisper-large-v3-turbo&#x27;. Result feeds into evaluate_caller_turn().</p><div class="contracts-wrap"><div class="contract-block"><span class="contract-label contract-in">IN:</span><span class="contract-text">bytes | file-like object | file path for WAV/MP3 audio; filename string for MIME hint</span></div><div class="contract-block"><span class="contract-label contract-out">OUT:</span><span class="contract-text">Transcribed plain-text string</span></div></div><div class="anchor-wrap"><div class="anchor-header"><span class="anchor-icon">&lt;/&gt;</span><span class="anchor-caption">Anchor: engine.py:229-259</span><span class="anchor-lang">PYTHON</span></div><pre class="anchor-pre"><code class="language-python">transcriber = aai.Transcriber()
+transcript = transcriber.transcribe(audio_stream)</code></pre></div></div></div>
+<div id="stage-flow-05" class="flow-card"><div class="flow-card-accent"></div><div class="flow-card-body"><div class="flow-card-header"><span class="step-badge">Step 5</span><span class="flow-card-sig"><span class="sig-module">engine.py</span> <span class="sig-arrow">→</span> <span class="sig-symbol">generate_staged_draft(session: dict, action: UserDecisionAction) -&gt; StagedResponse</span></span></div><h3 class="flow-card-name">Dealbreaker Escalation &amp; Staged Draft</h3><p class="flow-card-mech">When TurnDecision.is_dealbreaker=True the session enters DECISION_REQUIRED. The human picks an option; generate_staged_draft() sends it to the LLM which produces a bilingual polite counter-offer. The english_response is stored as pending_draft and a ledger entry is appended.</p><div class="contracts-wrap"><div class="contract-block"><span class="contract-label contract-in">IN:</span><span class="contract-text">Session dict (rules, language) + UserDecisionAction { chosen_action, custom_instruction }</span></div><div class="contract-block"><span class="contract-label contract-out">OUT:</span><span class="contract-text">StagedResponse: { english_response, translated_response, action_summary }</span></div></div><div class="anchor-wrap"><div class="anchor-header"><span class="anchor-icon">&lt;/&gt;</span><span class="anchor-caption">Anchor: app.py:178-200</span><span class="anchor-lang">PYTHON</span></div><pre class="anchor-pre"><code class="language-python">staged = generate_staged_draft(session, action)
+session[&quot;pending_draft&quot;] = staged.english_response</code></pre></div></div></div>
+<div id="stage-flow-06" class="flow-card"><div class="flow-card-accent"></div><div class="flow-card-body"><div class="flow-card-header"><span class="step-badge">Step 6</span><span class="flow-card-sig"><span class="sig-module">tts_player.py</span> <span class="sig-arrow">→</span> <span class="sig-symbol">speak_text_aloud(text: str, voice: str)</span></span></div><h3 class="flow-card-name">Approval &amp; TTS Playback</h3><p class="flow-card-mech">POST /approve clears pending_draft, appends agent turn to transcript_history, sets status to IN_PROGRESS, and returns speak_text. The test client calls speak_text_aloud() which synthesises with edge_tts.Communicate, saves a temp MP3, and plays it via a PowerShell subprocess blocking until playback completes.</p><div class="contracts-wrap"><div class="contract-block"><span class="contract-label contract-in">IN:</span><span class="contract-text">Session must be in AWAITING_APPROVAL state with a non-null pending_draft</span></div><div class="contract-block"><span class="contract-label contract-out">OUT:</span><span class="contract-text">REST: { status: &#x27;APPROVED&#x27;, speak_text }. Audio: MP3 synthesised via edge-tts and played via Windows PowerShell MediaPlayer.</span></div></div><div class="anchor-wrap"><div class="anchor-header"><span class="anchor-icon">&lt;/&gt;</span><span class="anchor-caption">Anchor: tts_player.py:44-63</span><span class="anchor-lang">PYTHON</span></div><pre class="anchor-pre"><code class="language-python">communicate = edge_tts.Communicate(text, voice)
+await communicate.save(temp_file)
+await asyncio.to_thread(play_audio_file, temp_file)</code></pre></div></div></div>
+<div id="stage-flow-07" class="flow-card"><div class="flow-card-accent"></div><div class="flow-card-body"><div class="flow-card-header"><span class="step-badge">Step 7</span><span class="flow-card-sig"><span class="sig-module">engine.py</span> <span class="sig-arrow">→</span> <span class="sig-symbol">generate_call_summary(session: dict) -&gt; FinalSummary</span></span></div><h3 class="flow-card-name">Post-Call Audit Summary</h3><p class="flow-card-mech">Formats the complete conversation as a plain-text block and sends it with task constraints and ledger to the LLM at temperature=0.1. The model extracts confirmed agreements, open items, and produces an executive headline.</p><div class="contracts-wrap"><div class="contract-block"><span class="contract-label contract-in">IN:</span><span class="contract-text">Full session dict with transcript_history, decision_ledger, and rules</span></div><div class="contract-block"><span class="contract-label contract-out">OUT:</span><span class="contract-text">FinalSummary: { outcome_headline, outcome_subtext, confirmed_items: List[str], unresolved_items: List[str] }</span></div></div><div class="anchor-wrap"><div class="anchor-header"><span class="anchor-icon">&lt;/&gt;</span><span class="anchor-caption">Anchor: engine.py:191-227</span><span class="anchor-lang">PYTHON</span></div><pre class="anchor-pre"><code class="language-python">raw_json = json.loads(response.choices[0].message.content)
+return FinalSummary(**raw_json)</code></pre></div></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────── DATA MODELS -->
+  <section id="models" class="section-fade border-b border-border px-6 py-12 lg:px-16">
+    <div class="max-w-6xl mx-auto">
+      <div class="flex items-center gap-3 mb-6">
+        <span class="section-bar bg-violet"></span>
+        <h2 class="text-xl font-bold text-ink">Core Data Models</h2>
+      </div>
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="bg-card border border-border rounded-xl overflow-hidden"><div class="flex items-center justify-between px-4 py-3 border-b border-border bg-subtle/30">  <span class="font-bold text-sm text-ink">IncomingUserRequest</span>  <span class="text-xs font-mono text-violet-400">models.py:4</span></div><div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="border-b border-border"><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Field</th><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Type</th><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Description</th></tr></thead><tbody class="divide-y divide-border"><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">raw_prompt</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">str</td><td class="px-4 py-2.5 text-xs text-faint">Natural-language goal description from the human client.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">user_language</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">Optional[str]</td><td class="px-4 py-2.5 text-xs text-faint">Preferred language for translated responses. Defaults to &#x27;English&#x27;.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">mode</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">Optional[str]</td><td class="px-4 py-2.5 text-xs text-faint">&#x27;delegate&#x27; — AI negotiates autonomously; &#x27;assist&#x27; — pauses for human approval on every commitment.</td></tr></tbody></table></div></div>
+<div class="bg-card border border-border rounded-xl overflow-hidden"><div class="flex items-center justify-between px-4 py-3 border-b border-border bg-subtle/30">  <span class="font-bold text-sm text-ink">ExtractedRules</span>  <span class="text-xs font-mono text-violet-400">models.py:26</span></div><div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="border-b border-border"><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Field</th><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Type</th><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Description</th></tr></thead><tbody class="divide-y divide-border"><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">intent</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">str</td><td class="px-4 py-2.5 text-xs text-faint">Primary action, e.g. &#x27;schedule_appointment&#x27;.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">target_business</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">str</td><td class="px-4 py-2.5 text-xs text-faint">Business being called, e.g. &#x27;Dr. Smith Dental Clinic&#x27;.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">action_details</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">Optional[str]</td><td class="px-4 py-2.5 text-xs text-faint">Specifics of the request.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">opening_phrase</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">Optional[str]</td><td class="px-4 py-2.5 text-xs text-faint">Natural first sentence CallBridge speaks when the receptionist picks up.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">constraints</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">List[RuleConstraint]</td><td class="px-4 py-2.5 text-xs text-faint">Parsed budget/time/quantity limits with parameter, operator, value, and unit.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">forbidden_disclosures</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">List[str]</td><td class="px-4 py-2.5 text-xs text-faint">Information the agent must never share (credit card, SSN, etc.).</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">special_notes</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">Optional[str]</td><td class="px-4 py-2.5 text-xs text-faint">Additional freeform notes from the user&#x27;s prompt.</td></tr></tbody></table></div></div>
+<div class="bg-card border border-border rounded-xl overflow-hidden"><div class="flex items-center justify-between px-4 py-3 border-b border-border bg-subtle/30">  <span class="font-bold text-sm text-ink">TurnDecision</span>  <span class="text-xs font-mono text-violet-400">models.py:52</span></div><div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="border-b border-border"><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Field</th><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Type</th><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Description</th></tr></thead><tbody class="divide-y divide-border"><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">is_dealbreaker</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">bool</td><td class="px-4 py-2.5 text-xs text-faint">True when the receptionist violates a constraint or requests forbidden data.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">call_completed</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">bool</td><td class="px-4 py-2.5 text-xs text-faint">True when the booking/order is confirmed or call ends.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">violation_parameter</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">Optional[str]</td><td class="px-4 py-2.5 text-xs text-faint">The violated constraint name, e.g. &#x27;price&#x27;.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">violation_reason</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">Optional[str]</td><td class="px-4 py-2.5 text-xs text-faint">Human-readable Red Card reason.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">immediate_stalling_phrase</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">Optional[str]</td><td class="px-4 py-2.5 text-xs text-faint">Phrase spoken immediately to keep receptionist waiting.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">suggested_user_options</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">Optional[List[str]]</td><td class="px-4 py-2.5 text-xs text-faint">2-4 actionable choices surfaced on the Human-in-the-Loop UI card.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">draft_response</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">Optional[str]</td><td class="px-4 py-2.5 text-xs text-faint">Next agent utterance (safe turn) or initial counter-offer text (dealbreaker).</td></tr></tbody></table></div></div>
+<div class="bg-card border border-border rounded-xl overflow-hidden"><div class="flex items-center justify-between px-4 py-3 border-b border-border bg-subtle/30">  <span class="font-bold text-sm text-ink">StagedResponse</span>  <span class="text-xs font-mono text-violet-400">models.py:97</span></div><div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="border-b border-border"><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Field</th><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Type</th><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Description</th></tr></thead><tbody class="divide-y divide-border"><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">english_response</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">str</td><td class="px-4 py-2.5 text-xs text-faint">Exact English phrase agent will speak after approval.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">translated_response</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">str</td><td class="px-4 py-2.5 text-xs text-faint">Same phrase in the user&#x27;s preferred language for verification.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">action_summary</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">str</td><td class="px-4 py-2.5 text-xs text-faint">One-line ledger entry, e.g. &#x27;Counter-offer drafted for Sunday appointment&#x27;.</td></tr></tbody></table></div></div>
+<div class="bg-card border border-border rounded-xl overflow-hidden"><div class="flex items-center justify-between px-4 py-3 border-b border-border bg-subtle/30">  <span class="font-bold text-sm text-ink">FinalSummary</span>  <span class="text-xs font-mono text-violet-400">models.py:108</span></div><div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="border-b border-border"><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Field</th><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Type</th><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Description</th></tr></thead><tbody class="divide-y divide-border"><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">outcome_headline</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">str</td><td class="px-4 py-2.5 text-xs text-faint">Bold executive headline of call result.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">outcome_subtext</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">str</td><td class="px-4 py-2.5 text-xs text-faint">One-sentence logistics/payment status description.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">confirmed_items</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">List[str]</td><td class="px-4 py-2.5 text-xs text-faint">Facts explicitly agreed upon during the conversation.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">unresolved_items</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">List[str]</td><td class="px-4 py-2.5 text-xs text-faint">Open questions or ambiguities the call did not resolve.</td></tr></tbody></table></div></div>
+<div class="bg-card border border-border rounded-xl overflow-hidden"><div class="flex items-center justify-between px-4 py-3 border-b border-border bg-subtle/30">  <span class="font-bold text-sm text-ink">UserDecisionAction</span>  <span class="text-xs font-mono text-violet-400">models.py:88</span></div><div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="border-b border-border"><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Field</th><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Type</th><th class="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted">Description</th></tr></thead><tbody class="divide-y divide-border"><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">chosen_action</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">str</td><td class="px-4 py-2.5 text-xs text-faint">Option selected by the human from the Red Decision Card.</td></tr><tr class="hover:bg-subtle/20 transition-colors"><td class="px-4 py-2.5 font-mono text-xs text-accent align-top">custom_instruction</td><td class="px-4 py-2.5 font-mono text-xs text-amber align-top whitespace-nowrap">Optional[str]</td><td class="px-4 py-2.5 text-xs text-faint">Free-text instruction if the user chose &#x27;Type my own response&#x27;.</td></tr></tbody></table></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────── FILE STRUCTURE -->
+  <section id="filesystem" class="section-fade border-b border-border px-6 py-12 lg:px-16">
+    <div class="max-w-6xl mx-auto">
+      <div class="flex items-center gap-3 mb-6">
+        <span class="section-bar bg-rose"></span>
+        <h2 class="text-xl font-bold text-ink">File System Directory</h2>
+      </div>
+      <div class="bg-card border border-border rounded-xl overflow-hidden">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-border text-left bg-subtle/20">
+              <th class="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted">File</th>
+              <th class="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted">Role</th>
+              <th class="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted text-right">LoC</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-border">
+            <tr class="bg-subtle/40"><td colspan="3" class="px-5 py-2">  <span class="font-mono text-xs font-bold text-ink">./</span>  <span class="ml-3 text-xs text-muted">All application source lives flat in the project root — no subdirectory layering.</span></td></tr>
+<tr class="hover:bg-subtle/20 transition-colors"><td class="px-5 py-3 pl-8 font-mono text-xs text-accent">app.py</td><td class="px-5 py-3 text-sm text-faint">FastAPI application — route handlers, session state machine, CORS middleware</td><td class="px-5 py-3 text-xs text-muted text-right font-mono tabular-nums">345</td></tr>
+<tr class="hover:bg-subtle/20 transition-colors"><td class="px-5 py-3 pl-8 font-mono text-xs text-accent">engine.py</td><td class="px-5 py-3 text-sm text-faint">LLM orchestration — Groq client, all prompt-building and inference calls, AssemblyAI + Whisper transcription</td><td class="px-5 py-3 text-xs text-muted text-right font-mono tabular-nums">260</td></tr>
+<tr class="hover:bg-subtle/20 transition-colors"><td class="px-5 py-3 pl-8 font-mono text-xs text-accent">models.py</td><td class="px-5 py-3 text-sm text-faint">Pydantic v2 data models for all request/response contracts</td><td class="px-5 py-3 text-xs text-muted text-right font-mono tabular-nums">125</td></tr>
+<tr class="hover:bg-subtle/20 transition-colors"><td class="px-5 py-3 pl-8 font-mono text-xs text-accent">tts_player.py</td><td class="px-5 py-3 text-sm text-faint">Edge TTS synthesis and PowerShell-based audio playback</td><td class="px-5 py-3 text-xs text-muted text-right font-mono tabular-nums">68</td></tr>
+<tr class="hover:bg-subtle/20 transition-colors"><td class="px-5 py-3 pl-8 font-mono text-xs text-accent">test_mic_caller.py</td><td class="px-5 py-3 text-sm text-faint">Interactive CLI test harness — mic recording, HTTP orchestration, human-in-the-loop decision prompts</td><td class="px-5 py-3 text-xs text-muted text-right font-mono tabular-nums">261</td></tr>
+<tr class="hover:bg-subtle/20 transition-colors"><td class="px-5 py-3 pl-8 font-mono text-xs text-accent">list_models.py</td><td class="px-5 py-3 text-sm text-faint">Standalone debug script to enumerate available Groq models</td><td class="px-5 py-3 text-xs text-muted text-right font-mono tabular-nums">24</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────────────────── SETUP PLAYBOOK -->
+  <section id="playbook" class="section-fade px-6 py-12 lg:px-16">
+    <div class="max-w-6xl mx-auto">
+      <div class="flex items-center gap-3 mb-6">
+        <span class="section-bar bg-faint"></span>
+        <h2 class="text-xl font-bold text-ink">Setup &amp; Verification Playbook</h2>
+      </div>
+      <div class="bg-card border border-border rounded-xl p-5 mb-6">
+        <p class="text-[10px] font-semibold uppercase tracking-widest text-muted mb-3">Prerequisites</p>
+        <ul class="space-y-1.5 text-sm text-faint list-none">
+          <li class="flex items-start gap-2"><span class="text-teal shrink-0 mt-0.5">›</span><span>Python &gt;= 3.10</span></li><li class="flex items-start gap-2"><span class="text-teal shrink-0 mt-0.5">›</span><span>pip</span></li><li class="flex items-start gap-2"><span class="text-teal shrink-0 mt-0.5">›</span><span>Git</span></li><li class="flex items-start gap-2"><span class="text-teal shrink-0 mt-0.5">›</span><span>Windows (TTS playback uses PowerShell MediaPlayer)</span></li><li class="flex items-start gap-2"><span class="text-teal shrink-0 mt-0.5">›</span><span>Groq API key</span></li><li class="flex items-start gap-2"><span class="text-teal shrink-0 mt-0.5">›</span><span>AssemblyAI API key (optional)</span></li>
+        </ul>
+      </div>
+      <div class="flex flex-col gap-4">
+        <div class="cmd-block bg-card border border-border rounded-xl overflow-hidden"><div class="flex items-center justify-between px-5 py-3 border-b border-border">  <div class="flex items-center gap-3">    <span class="text-xs font-bold px-2 py-0.5 rounded-full      bg-subtle text-muted border border-border">Step 1</span>    <span class="font-semibold text-sm text-ink">Clone Repository</span>  </div>  <button class="copy-btn text-xs font-semibold px-3 py-1 rounded    bg-subtle text-faint border border-border    hover:text-ink transition-colors cursor-pointer">Copy</button></div><pre class="px-5 py-4 overflow-x-auto text-xs font-mono text-faint bg-[#0d1117]"><code>git clone https://github.com/Shariq-duet/CallBridge.git &amp;&amp; cd CallBridge</code></pre></div>
+<div class="cmd-block bg-card border border-border rounded-xl overflow-hidden"><div class="flex items-center justify-between px-5 py-3 border-b border-border">  <div class="flex items-center gap-3">    <span class="text-xs font-bold px-2 py-0.5 rounded-full      bg-subtle text-muted border border-border">Step 2</span>    <span class="font-semibold text-sm text-ink">Create &amp; Activate Virtual Environment</span>  </div>  <button class="copy-btn text-xs font-semibold px-3 py-1 rounded    bg-subtle text-faint border border-border    hover:text-ink transition-colors cursor-pointer">Copy</button></div><pre class="px-5 py-4 overflow-x-auto text-xs font-mono text-faint bg-[#0d1117]"><code>python -m venv venv &amp;&amp; venv\Scripts\activate</code></pre></div>
+<div class="cmd-block bg-card border border-border rounded-xl overflow-hidden"><div class="flex items-center justify-between px-5 py-3 border-b border-border">  <div class="flex items-center gap-3">    <span class="text-xs font-bold px-2 py-0.5 rounded-full      bg-subtle text-muted border border-border">Step 3</span>    <span class="font-semibold text-sm text-ink">Install Dependencies</span>  </div>  <button class="copy-btn text-xs font-semibold px-3 py-1 rounded    bg-subtle text-faint border border-border    hover:text-ink transition-colors cursor-pointer">Copy</button></div><pre class="px-5 py-4 overflow-x-auto text-xs font-mono text-faint bg-[#0d1117]"><code>pip install --upgrade pip &amp;&amp; pip install -r requirements.txt</code></pre></div>
+<div class="cmd-block bg-card border border-border rounded-xl overflow-hidden"><div class="flex items-center justify-between px-5 py-3 border-b border-border">  <div class="flex items-center gap-3">    <span class="text-xs font-bold px-2 py-0.5 rounded-full      bg-subtle text-muted border border-border">Step 4</span>    <span class="font-semibold text-sm text-ink">Configure Environment Variables</span>  </div>  <button class="copy-btn text-xs font-semibold px-3 py-1 rounded    bg-subtle text-faint border border-border    hover:text-ink transition-colors cursor-pointer">Copy</button></div><pre class="px-5 py-4 overflow-x-auto text-xs font-mono text-faint bg-[#0d1117]"><code>copy .env.example .env
+# Edit .env: set GROQ_API_KEY, GROQ_MODEL, ASSEMBLYAI_API_KEY</code></pre></div>
+<div class="cmd-block bg-card border border-border rounded-xl overflow-hidden"><div class="flex items-center justify-between px-5 py-3 border-b border-border">  <div class="flex items-center gap-3">    <span class="text-xs font-bold px-2 py-0.5 rounded-full      bg-subtle text-muted border border-border">Step 5</span>    <span class="font-semibold text-sm text-ink">Start Backend Server</span>  </div>  <button class="copy-btn text-xs font-semibold px-3 py-1 rounded    bg-subtle text-faint border border-border    hover:text-ink transition-colors cursor-pointer">Copy</button></div><pre class="px-5 py-4 overflow-x-auto text-xs font-mono text-faint bg-[#0d1117]"><code>uvicorn app:app --reload --port 8000</code></pre></div>
+<div class="cmd-block bg-card border border-border rounded-xl overflow-hidden"><div class="flex items-center justify-between px-5 py-3 border-b border-border">  <div class="flex items-center gap-3">    <span class="text-xs font-bold px-2 py-0.5 rounded-full      bg-subtle text-muted border border-border">Step 6</span>    <span class="font-semibold text-sm text-ink">Verify API is Live</span>  </div>  <button class="copy-btn text-xs font-semibold px-3 py-1 rounded    bg-subtle text-faint border border-border    hover:text-ink transition-colors cursor-pointer">Copy</button></div><pre class="px-5 py-4 overflow-x-auto text-xs font-mono text-faint bg-[#0d1117]"><code>curl http://127.0.0.1:8000/api/models</code></pre></div>
+<div class="cmd-block bg-card border border-border rounded-xl overflow-hidden"><div class="flex items-center justify-between px-5 py-3 border-b border-border">  <div class="flex items-center gap-3">    <span class="text-xs font-bold px-2 py-0.5 rounded-full      bg-subtle text-muted border border-border">Step 7</span>    <span class="font-semibold text-sm text-ink">Run Interactive Test Client</span>  </div>  <button class="copy-btn text-xs font-semibold px-3 py-1 rounded    bg-subtle text-faint border border-border    hover:text-ink transition-colors cursor-pointer">Copy</button></div><pre class="px-5 py-4 overflow-x-auto text-xs font-mono text-faint bg-[#0d1117]"><code>python test_mic_caller.py</code></pre></div>
+<div class="cmd-block bg-card border border-border rounded-xl overflow-hidden"><div class="flex items-center justify-between px-5 py-3 border-b border-border">  <div class="flex items-center gap-3">    <span class="text-xs font-bold px-2 py-0.5 rounded-full      bg-subtle text-muted border border-border">Step 8</span>    <span class="font-semibold text-sm text-ink">Explore Swagger Docs</span>  </div>  <button class="copy-btn text-xs font-semibold px-3 py-1 rounded    bg-subtle text-faint border border-border    hover:text-ink transition-colors cursor-pointer">Copy</button></div><pre class="px-5 py-4 overflow-x-auto text-xs font-mono text-faint bg-[#0d1117]"><code>start http://127.0.0.1:8000/docs</code></pre></div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="border-t border-border px-6 py-5 text-center text-xs text-muted">
+  Generated by <span class="text-faint font-semibold">OnboardFlow</span> &mdash; Made with IBM Bob
+</footer>
+
+<!-- ══════════════════════════════════════════════ SCRIPTS -->
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    darkMode: true,
+    securityLevel: 'loose',
+    themeVariables: {
+      background:          '#0a0f1c',
+      mainBkg:             '#0d1321',
+      nodeBorder:          '#4f8ef7',
+      clusterBkg:          '#070b14',
+      clusterBorder:       '#1a2235',
+      titleColor:          '#dde6f0',
+      edgeLabelBackground: '#070b14',
+      lineColor:           '#4f8ef7',
+      primaryTextColor:    '#dde6f0',
+    },
+    flowchart: {
+      curve: 'basis',
+      padding: 24,
+      htmlLabels: true,
+      useMaxWidth: false,
+    },
+  });
+
+  // ── Render Mermaid into a detached div, then move the SVG into the wrapper ──
+  async function renderDiagram() {
+    var source  = document.getElementById('mermaid-source');
+    var wrapper = document.getElementById('diagram-svg-wrap');
+    var container = document.getElementById('diagram-container');
+    if (!source || !wrapper) return null;
+
+    // Render off-screen
+    var temp = document.createElement('div');
+    temp.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden';
+    temp.className = 'mermaid';
+    temp.textContent = source.textContent;
+    document.body.appendChild(temp);
+
+    try {
+      await mermaid.run({ nodes: [temp] });
+    } catch(e) {
+      console.warn('Mermaid render error:', e);
+    }
+
+    var svg = temp.querySelector('svg');
+    if (!svg) { document.body.removeChild(temp); return null; }
+
+    // Strip fixed pixel dimensions — pan-zoom and CSS control size
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+    svg.style.width  = '100%';
+    svg.style.height = '100%';
+
+    // Pre-size the container from the viewBox ratio so there is no blank gap.
+    // We scale the viewBox height to the container's current pixel width.
+    var vb = svg.getAttribute('viewBox');
+    if (vb) {
+      var parts = vb.split(/[\s,]+/).map(parseFloat);
+      if (parts.length === 4 && parts[2] > 0 && parts[3] > 0) {
+        var containerW = container.offsetWidth || window.innerWidth;
+        var naturalH   = Math.round((parts[3] / parts[2]) * containerW);
+        // Clamp: 200px min (wide/flat graphs), 560px max (avoids giant height)
+        container.style.height = Math.min(560, Math.max(200, naturalH)) + 'px';
+      }
+    }
+
+    wrapper.appendChild(svg);
+    document.body.removeChild(temp);
+    return svg;
+  }
+
+  // ── Card index for click-to-jump ──
+  function buildCardIndex() {
+    var index = [];
+    document.querySelectorAll('[id^="stage-"]').forEach(function(card) {
+      var terms = [card.id.replace('stage-', '')];
+      // Target the semantic class names used by visualizer.py's build_flow_cards()
+      var step = card.querySelector('.step-badge');
+      var name = card.querySelector('.flow-card-name');
+      var mod  = card.querySelector('.sig-module');
+      var sym  = card.querySelector('.sig-symbol');
+      if (step) terms.push(step.textContent.trim().toLowerCase());
+      if (name) terms.push(name.textContent.trim().toLowerCase());
+      if (mod)  terms.push(mod.textContent.trim().toLowerCase());
+      if (sym)  terms.push(sym.textContent.trim().toLowerCase());
+      index.push({ cardId: card.id, terms: terms });
+    });
+    return index;
+  }
+
+  function findCard(label, index) {
+    var norm = label.toLowerCase().replace(/\s+/g,' ').trim();
+    if (!norm) return null;
+    for (var i = 0; i < index.length; i++) {
+      for (var j = 0; j < index[i].terms.length; j++) {
+        var t = index[i].terms[j];
+        if (t && (norm.includes(t) || t.includes(norm))) return index[i].cardId;
+      }
+    }
+    return null;
+  }
+
+  function jumpToCard(cardId) {
+    var card = document.getElementById(cardId);
+    if (!card) return;
+    document.getElementById('flow').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setTimeout(function() {
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      card.classList.remove('stage-highlight');
+      void card.offsetWidth;
+      card.classList.add('stage-highlight');
+      card.addEventListener('animationend', function() {
+        card.classList.remove('stage-highlight');
+      }, { once: true });
+    }, 320);
+  }
+
+  // ── Build a map of node element → cardId for hit-testing ──
+  function buildNodeMap(svg) {
+    var map = [];
+    var index = buildCardIndex();
+    svg.querySelectorAll('g.node, g[class*="node"]').forEach(function(node) {
+      var label = Array.from(node.querySelectorAll('text,span,p,foreignObject'))
+        .map(function(el){ return el.textContent; }).join(' ')
+        .replace(/\s+/g,' ').trim();
+      var cardId = findCard(label, index);
+      if (!cardId) return;
+      node.style.cursor = 'pointer';
+      node.setAttribute('data-card', cardId);
+      map.push({ el: node, cardId: cardId });
+
+      // hover glow is safe — mouseenter/leave don't conflict with pan-zoom
+      node.addEventListener('mouseenter', function() {
+        node.style.filter = 'brightness(1.35) drop-shadow(0 0 8px #4f8ef7aa)';
+      });
+      node.addEventListener('mouseleave', function() {
+        node.style.filter = '';
+      });
+    });
+    return map;
+  }
+
+  // ── Bootstrap pan-zoom after render ──
+  document.addEventListener('DOMContentLoaded', async function() {
+    var svg = await renderDiagram();
+    if (!svg) return;
+
+    // Initialise svg-pan-zoom
+    var pz = null;
+    try {
+      pz = svgPanZoom(svg, {
+        zoomEnabled:          true,
+        panEnabled:           true,
+        controlIconsEnabled:  false,
+        fit:                  true,
+        center:               true,
+        minZoom:              0.3,
+        maxZoom:              8,
+        zoomScaleSensitivity: 0.25,
+      });
+    } catch(e) {
+      console.warn('svgPanZoom init failed:', e);
+    }
+
+    // ── Click detection that survives svg-pan-zoom ────────────────────────────
+    // svg-pan-zoom captures pointerdown/up at the container level for dragging.
+    // Attaching a 'click' listener directly to <g class="node"> elements is
+    // unreliable because the library swallows those events during pan.
+    // Solution: track mousedown position on the CONTAINER, and on mouseup check
+    // if the pointer barely moved (≤ 4px). If so, it was a tap not a drag —
+    // walk up the DOM from the event target to find the nearest [data-card] node.
+    var nodeMap = buildNodeMap(svg);
+    var downX = 0, downY = 0;
+    var container = document.getElementById('diagram-container');
+
+    container.addEventListener('mousedown', function(e) {
+      downX = e.clientX; downY = e.clientY;
+    });
+
+    container.addEventListener('mouseup', function(e) {
+      var dx = e.clientX - downX, dy = e.clientY - downY;
+      // Only treat as a click if the pointer moved ≤ 4px (not a drag)
+      if (Math.sqrt(dx * dx + dy * dy) > 4) return;
+
+      // Walk up from the actual target to find the nearest node with data-card
+      var el = e.target;
+      while (el && el !== svg) {
+        if (el.getAttribute && el.getAttribute('data-card')) {
+          jumpToCard(el.getAttribute('data-card'));
+          return;
+        }
+        el = el.parentElement;
+      }
+    });
+
+    // After pan-zoom fits the diagram, measure the actual rendered content height
+    // and shrink the container to match — eliminates the dead blank space below.
+    try {
+      var bbox = svg.getBBox ? svg.getBBox() : null;
+      if (bbox && bbox.height > 30) {
+        // Add 40px padding (20px top + 20px bottom)
+        var fittedH = Math.min(560, Math.max(200, Math.round(bbox.height) + 40));
+        container.style.height = fittedH + 'px';
+        if (pz) { pz.resize(); pz.fit(); pz.center(); }
+      }
+    } catch(e) { /* getBBox unavailable in some browsers — silently skip */ }
+
+    // Toolbar buttons
+    document.getElementById('btn-zoom-in').addEventListener('click',  function(){ if(pz) pz.zoomIn(); });
+    document.getElementById('btn-zoom-out').addEventListener('click', function(){ if(pz) pz.zoomOut(); });
+    document.getElementById('btn-reset').addEventListener('click',    function(){ if(pz){ pz.resetZoom(); pz.center(); } });
+
+    // node wiring is handled by buildNodeMap() + container mouseup above
+  });
+</script>
+
+<script>
+  // Empty-state
+  document.addEventListener('DOMContentLoaded', function() {
+    if (/\{\{[A-Z_]+\}\}/.test(document.body.innerText || '')) {
+      document.getElementById('empty-state').classList.add('visible');
+    }
+  });
+
+  // highlight.js
+  document.addEventListener('DOMContentLoaded', function() { hljs.highlightAll(); });
+
+  // Scroll spy — top nav active link
+  (function() {
+    var links = document.querySelectorAll('.nav-link');
+    var ids   = Array.from(links).map(function(a){ return a.getAttribute('href').replace('#',''); });
+    var secs  = ids.map(function(id){ return document.getElementById(id); }).filter(Boolean);
+    function update() {
+      var y = window.scrollY + 80;
+      var active = secs[0];
+      secs.forEach(function(s){ if (s && s.offsetTop <= y) active = s; });
+      links.forEach(function(a){
+        a.classList.toggle('active', a.getAttribute('href') === '#' + (active && active.id));
+      });
+    }
+    window.addEventListener('scroll', update, { passive: true });
+    update();
+  })();
+
+  // Section fade-in
+  (function() {
+    var obs = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){ if (e.isIntersecting) e.target.classList.add('visible'); });
+    }, { threshold: 0.04 });
+    document.querySelectorAll('.section-fade').forEach(function(el){ obs.observe(el); });
+  })();
+
+  // Copy buttons
+  document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.copy-btn');
+    if (!btn) return;
+    var code = btn.closest('.cmd-block') && btn.closest('.cmd-block').querySelector('code');
+    if (!code) return;
+    navigator.clipboard.writeText(code.innerText).then(function() {
+      btn.textContent = 'Copied!';
+      btn.classList.add('copied');
+      setTimeout(function(){ btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1800);
+    });
+  });
+</script>
+
+</body>
+</html>

@@ -1,0 +1,287 @@
+{
+  "$schema": "https://onboardflow.dev/schemas/v1/blueprint.json",
+  "project_metadata": {
+    "name": "CallBridge",
+    "slug": "callbridge",
+    "version": "1.0.0",
+    "archetype": "api_server",
+    "summary": "Autonomous outbound phone-negotiation agent that places calls on behalf of a human client, intercepts constraint violations in real time, stalls the receptionist with a natural holding phrase, escalates a Red Decision Card to the human, and speaks an approved counter-offer back — all through a FastAPI backend with WebSocket and REST interfaces.",
+    "project_description": {
+      "primary_purpose": "CallBridge solves the problem of high-stakes, constraint-bound phone negotiations that humans find stressful or error-prone — such as booking medical appointments under time and budget limits, placing food orders with specific restrictions, or negotiating service terms. The system acts as a fully autonomous AI caller: it accepts a natural-language goal from the user, parses it into a structured rule-set (budgets, time windows, forbidden disclosures), and conducts the entire outbound conversation on the user's behalf. The real-world value is that it eliminates the cognitive load of live negotiation while guaranteeing that user-defined hard limits are never breached without explicit human sign-off.",
+      "architecture_and_control_flow": "Requests enter through a FastAPI server (app.py) which maintains an in-memory session store (sessiondb). On session creation, the user's raw prompt is forwarded to engine.extract_rules_from_prompt(), which calls the Groq LLM with a structured system prompt and json_object response format to produce an ExtractedRules Pydantic model. During the call, each receptionist utterance arrives either as text via POST /evaluate-turn or as raw audio via POST /audio-turn — the audio path first passes through engine.transcribe_audio() (AssemblyAI primary, Groq Whisper fallback) before joining the same evaluation path. engine.evaluate_caller_turn() then builds a context window from the last 8 transcript turns plus the decision ledger and sends it to the LLM, which returns a TurnDecision. Depending on that decision, the session transitions to IN_PROGRESS (safe reply), DECISION_REQUIRED (dealbreaker), or COMPLETED (call confirmed). A parallel WebSocket endpoint (/ws/call/{session_id}) mirrors the full state machine for streaming frontends using named JSON events.",
+      "edge_cases_and_invariants": "The most critical invariant is the dealbreaker interception: if the LLM sets is_dealbreaker=true, the session is immediately frozen at DECISION_REQUIRED and a stalling phrase is returned for the agent to speak aloud — the call cannot proceed until the human explicitly approves a counter-action via /user-action followed by /approve. An approved override is appended to the decision_ledger, and the LLM is explicitly instructed to treat ledger entries as authoritative — preventing previously approved alternatives from being re-flagged as violations. Audio transcription failures degrade gracefully: AssemblyAI errors are caught and logged, falling back to Groq Whisper; if both fail the endpoint returns a 500 with a structured error body rather than silently dropping the turn. TTS playback failures in tts_player.py are swallowed entirely (bare except pass) so a speaker driver issue never crashes the client. Empty or silent audio turns return a canned 'couldn't hear you' draft response without invoking the LLM, avoiding wasted inference on empty input."
+    },
+    "tech_stack": [
+      {"name": "Python", "version": ">=3.10", "category": "runtime"},
+      {"name": "FastAPI", "version": ">=0.110.0", "category": "web-framework"},
+      {"name": "Uvicorn", "version": ">=0.28.0", "category": "asgi-server"},
+      {"name": "Pydantic", "version": ">=2.6.0", "category": "data-validation"},
+      {"name": "OpenAI SDK (Groq)", "version": ">=1.14.0", "category": "llm-client"},
+      {"name": "AssemblyAI", "version": ">=0.23.0", "category": "speech-to-text"},
+      {"name": "Edge TTS", "version": ">=6.1.10", "category": "text-to-speech"},
+      {"name": "SoundDevice + SciPy", "version": ">=0.4.6 / >=1.12.0", "category": "audio-io"},
+      {"name": "python-dotenv", "version": ">=1.0.0", "category": "config"},
+      {"name": "websockets", "version": ">=12.0", "category": "realtime-transport"}
+    ],
+    "hardware_requirements": {
+      "gpu_recommended": false,
+      "min_ram_gb": 2,
+      "notes": "CPU-only. Requires microphone and speakers for the interactive test client. Windows assumed for TTS playback via PowerShell MediaPlayer."
+    }
+  },
+
+  "entrypoint_and_execution": {
+    "primary_entry": "app.py",
+    "execution_type": "asgi_server",
+    "sample_run_command": "uvicorn app:app --reload --port 8000",
+    "cli_flags_or_routes": [
+      {"flag_or_route": "POST /api/session/create", "type": "REST", "required": true, "description": "Parses the user's natural-language prompt and creates a negotiation session with extracted rules."},
+      {"flag_or_route": "GET /api/session/{session_id}/status", "type": "REST", "required": false, "description": "Returns current session state, mode, pending draft, and decision ledger."},
+      {"flag_or_route": "POST /api/session/{session_id}/evaluate-turn", "type": "REST", "required": false, "description": "Submits a text turn from the receptionist; returns TurnDecision (dealbreaker or draft reply)."},
+      {"flag_or_route": "POST /api/session/{session_id}/audio-turn", "type": "REST", "required": false, "description": "Submits raw audio (multipart/form-data); transcribes via AssemblyAI then evaluates the turn."},
+      {"flag_or_route": "POST /api/session/{session_id}/user-action", "type": "REST", "required": false, "description": "Records the human client's chosen counter-action and stages a bilingual draft response."},
+      {"flag_or_route": "POST /api/session/{session_id}/approve", "type": "REST", "required": false, "description": "Approves the pending staged draft for speaking; clears the pending draft and resumes IN_PROGRESS."},
+      {"flag_or_route": "POST /api/session/{session_id}/complete", "type": "REST", "required": false, "description": "Finalises the call and generates the post-call audit summary report."},
+      {"flag_or_route": "GET /api/models", "type": "REST", "required": false, "description": "Lists available models from the configured Groq endpoint."},
+      {"flag_or_route": "WS /ws/call/{session_id}", "type": "WebSocket", "required": false, "description": "Real-time bidirectional call channel: TRANSCRIPTION_CHUNK / USER_ACTION / APPROVE_AND_SPEAK / END_CALL in; SPEAK_PHRASE / DECISION_REQUIRED / STAGING_UPDATE / CALL_SUMMARY out."}
+    ],
+    "lifecycle_summary": "On startup, FastAPI registers all routes and CORS middleware. A client POSTs to /api/session/create with a natural-language prompt; engine.extract_rules_from_prompt() calls the Groq LLM to produce an ExtractedRules object stored in sessiondb. During the call, each receptionist utterance is evaluated by engine.evaluate_caller_turn() which returns a TurnDecision. Dealbreakers freeze the session at DECISION_REQUIRED; the human picks a counter-action via /user-action, engine.generate_staged_draft() produces a bilingual response, and /approve resumes the call. At call end, /complete calls engine.generate_call_summary() for a structured audit report."
+  },
+
+  "environment_and_secrets": [
+    {
+      "key": "GROQ_API_KEY",
+      "required": true,
+      "default_or_example": "your_groq_api_key_here",
+      "description": "API key for the Groq inference endpoint. Missing key raises ValueError at import time in engine.py."
+    },
+    {
+      "key": "GROQ_MODEL",
+      "required": false,
+      "default_or_example": "openai/gpt-oss-20b",
+      "description": "Model identifier passed to Groq for all chat completions. Defaults to 'openai/gpt-oss-20b' via get_model()."
+    },
+    {
+      "key": "ASSEMBLYAI_API_KEY",
+      "required": false,
+      "default_or_example": "your_assemblyai_api_key_here",
+      "description": "API key for AssemblyAI speech-to-text. When absent, transcribe_audio() falls back to Groq Whisper (whisper-large-v3-turbo)."
+    }
+  ],
+
+  "mermaid_graph": "graph TD\n  subgraph Client[\"Client Entry Points\"]\n    A1[\"test_mic_caller.py\\n(interactive CLI)\"]\n    A2[\"Frontend / Postman\\n(HTTP + WebSocket)\"]\n  end\n\n  subgraph API[\"app.py — FastAPI Server\"]\n    B1[\"POST /api/session/create\"]\n    B2[\"POST /{id}/evaluate-turn\"]\n    B3[\"POST /{id}/audio-turn\"]\n    B4[\"POST /{id}/user-action\"]\n    B5[\"POST /{id}/approve\"]\n    B6[\"POST /{id}/complete\"]\n    B7[\"WS /ws/call/{id}\"]\n  end\n\n  subgraph Engine[\"engine.py — LLM Orchestration\"]\n    C1[\"extract_rules_from_prompt()\\nGroq JSON mode\"]\n    C2[\"evaluate_caller_turn()\\nGroq JSON mode\"]\n    C3[\"generate_staged_draft()\\nGroq JSON mode\"]\n    C4[\"generate_call_summary()\\nGroq JSON mode\"]\n    C5[\"transcribe_audio()\\nAssemblyAI / Groq Whisper\"]\n  end\n\n  subgraph TTS[\"tts_player.py\"]\n    E1[\"speak_text_aloud()\\nedge_tts\"]\n    E2[\"play_audio_file()\\nPowerShell\"]\n  end\n\n  subgraph State[\"In-Memory State\"]\n    F1[\"sessiondb: Dict\"]\n  end\n\n  A1 -->|HTTP POST| B1\n  A2 -->|HTTP / WS| B1\n  A2 --> B7\n  B1 --> C1\n  C1 --> F1\n  B2 --> C2\n  B3 --> C5\n  C5 --> C2\n  C2 --> F1\n  B4 --> C3\n  C3 --> F1\n  B6 --> C4\n  B7 --> C2\n  B7 --> C3\n  B7 --> C4\n  A1 --> E1\n  E1 --> E2",
+
+  "execution_flow": [
+    {
+      "stage_id": "flow-01",
+      "step_number": 1,
+      "name": "Session Creation & Rule Extraction",
+      "module_file": "app.py",
+      "symbol_invoked": "create_session(request: IncomingUserRequest)",
+      "input_contract": "JSON body: { raw_prompt: str, user_language: str = 'English', mode: str = 'delegate' | 'assist' }",
+      "output_contract": "JSON: { status, session_id, flags: {is_configured, status, mode}, extracted_rules: ExtractedRules }",
+      "mechanism": "Validates the raw prompt is non-empty, generates a UUID session ID (8 chars), calls engine.extract_rules_from_prompt() to parse constraints via LLM, then stores the full session dict in sessiondb.",
+      "code_anchor": {
+        "file": "app.py",
+        "lines": "34-69",
+        "snippet": "rules = extract_rules_from_prompt(clean_prompt, request.user_language)"
+      }
+    },
+    {
+      "stage_id": "flow-02",
+      "step_number": 2,
+      "name": "LLM Goal Parsing",
+      "module_file": "engine.py",
+      "symbol_invoked": "extract_rules_from_prompt(prompt: str, user_language: str) -> ExtractedRules",
+      "input_contract": "Natural-language instruction string + user's preferred language",
+      "output_contract": "ExtractedRules: { intent, target_business, action_details, opening_phrase, constraints: List[RuleConstraint], forbidden_disclosures, special_notes }",
+      "mechanism": "Builds a structured system prompt and calls client.chat.completions.create() with response_format={'type': 'json_object'} at temperature=0.1. Parses the returned JSON and validates through the ExtractedRules Pydantic model.",
+      "code_anchor": {
+        "file": "engine.py",
+        "lines": "35-69",
+        "snippet": "response = client.chat.completions.create(model=get_model(), messages=[...], response_format={\"type\": \"json_object\"}, temperature=0.1)"
+      }
+    },
+    {
+      "stage_id": "flow-03",
+      "step_number": 3,
+      "name": "Receptionist Turn Evaluation",
+      "module_file": "engine.py",
+      "symbol_invoked": "evaluate_caller_turn(caller_text: str, session: dict) -> TurnDecision",
+      "input_contract": "Receptionist speech string + full session dict (rules, transcript_history, decision_ledger, mode)",
+      "output_contract": "TurnDecision: { is_dealbreaker, call_completed, violation_parameter, violation_reason, immediate_stalling_phrase, suggested_user_options: List[str], draft_response }",
+      "mechanism": "Assembles a context-rich system prompt including the last 8 history turns, decision ledger of approved overrides, constraint rules, and ASSIST-mode addendum if active. Calls Groq at temperature=0.1 with json_object response format.",
+      "code_anchor": {
+        "file": "engine.py",
+        "lines": "71-149",
+        "snippet": "raw_json = json.loads(response.choices[0].message.content)\nreturn TurnDecision(**raw_json)"
+      }
+    },
+    {
+      "stage_id": "flow-04",
+      "step_number": 4,
+      "name": "Audio Transcription",
+      "module_file": "engine.py",
+      "symbol_invoked": "transcribe_audio(audio_input, filename: str) -> str",
+      "input_contract": "bytes | file-like object | file path for WAV/MP3 audio; filename string for MIME hint",
+      "output_contract": "Transcribed plain-text string",
+      "mechanism": "Primary path: AssemblyAI Transcriber (if ASSEMBLYAI_API_KEY is set). Fallback: Groq Whisper via client.audio.transcriptions.create() using model='whisper-large-v3-turbo'. Result feeds into evaluate_caller_turn().",
+      "code_anchor": {
+        "file": "engine.py",
+        "lines": "229-259",
+        "snippet": "transcriber = aai.Transcriber()\ntranscript = transcriber.transcribe(audio_stream)"
+      }
+    },
+    {
+      "stage_id": "flow-05",
+      "step_number": 5,
+      "name": "Dealbreaker Escalation & Staged Draft",
+      "module_file": "engine.py",
+      "symbol_invoked": "generate_staged_draft(session: dict, action: UserDecisionAction) -> StagedResponse",
+      "input_contract": "Session dict (rules, language) + UserDecisionAction { chosen_action, custom_instruction }",
+      "output_contract": "StagedResponse: { english_response, translated_response, action_summary }",
+      "mechanism": "When TurnDecision.is_dealbreaker=True the session enters DECISION_REQUIRED. The human picks an option; generate_staged_draft() sends it to the LLM which produces a bilingual polite counter-offer. The english_response is stored as pending_draft and a ledger entry is appended.",
+      "code_anchor": {
+        "file": "app.py",
+        "lines": "178-200",
+        "snippet": "staged = generate_staged_draft(session, action)\nsession[\"pending_draft\"] = staged.english_response"
+      }
+    },
+    {
+      "stage_id": "flow-06",
+      "step_number": 6,
+      "name": "Approval & TTS Playback",
+      "module_file": "tts_player.py",
+      "symbol_invoked": "speak_text_aloud(text: str, voice: str)",
+      "input_contract": "Session must be in AWAITING_APPROVAL state with a non-null pending_draft",
+      "output_contract": "REST: { status: 'APPROVED', speak_text }. Audio: MP3 synthesised via edge-tts and played via Windows PowerShell MediaPlayer.",
+      "mechanism": "POST /approve clears pending_draft, appends agent turn to transcript_history, sets status to IN_PROGRESS, and returns speak_text. The test client calls speak_text_aloud() which synthesises with edge_tts.Communicate, saves a temp MP3, and plays it via a PowerShell subprocess blocking until playback completes.",
+      "code_anchor": {
+        "file": "tts_player.py",
+        "lines": "44-63",
+        "snippet": "communicate = edge_tts.Communicate(text, voice)\nawait communicate.save(temp_file)\nawait asyncio.to_thread(play_audio_file, temp_file)"
+      }
+    },
+    {
+      "stage_id": "flow-07",
+      "step_number": 7,
+      "name": "Post-Call Audit Summary",
+      "module_file": "engine.py",
+      "symbol_invoked": "generate_call_summary(session: dict) -> FinalSummary",
+      "input_contract": "Full session dict with transcript_history, decision_ledger, and rules",
+      "output_contract": "FinalSummary: { outcome_headline, outcome_subtext, confirmed_items: List[str], unresolved_items: List[str] }",
+      "mechanism": "Formats the complete conversation as a plain-text block and sends it with task constraints and ledger to the LLM at temperature=0.1. The model extracts confirmed agreements, open items, and produces an executive headline.",
+      "code_anchor": {
+        "file": "engine.py",
+        "lines": "191-227",
+        "snippet": "raw_json = json.loads(response.choices[0].message.content)\nreturn FinalSummary(**raw_json)"
+      }
+    }
+  ],
+
+  "core_data_models": [
+    {
+      "entity_name": "IncomingUserRequest",
+      "defined_in": "models.py:4",
+      "fields": [
+        {"name": "raw_prompt", "type": "str", "description": "Natural-language goal description from the human client."},
+        {"name": "user_language", "type": "Optional[str]", "description": "Preferred language for translated responses. Defaults to 'English'."},
+        {"name": "mode", "type": "Optional[str]", "description": "'delegate' — AI negotiates autonomously; 'assist' — pauses for human approval on every commitment."}
+      ]
+    },
+    {
+      "entity_name": "ExtractedRules",
+      "defined_in": "models.py:26",
+      "fields": [
+        {"name": "intent", "type": "str", "description": "Primary action, e.g. 'schedule_appointment'."},
+        {"name": "target_business", "type": "str", "description": "Business being called, e.g. 'Dr. Smith Dental Clinic'."},
+        {"name": "action_details", "type": "Optional[str]", "description": "Specifics of the request."},
+        {"name": "opening_phrase", "type": "Optional[str]", "description": "Natural first sentence CallBridge speaks when the receptionist picks up."},
+        {"name": "constraints", "type": "List[RuleConstraint]", "description": "Parsed budget/time/quantity limits with parameter, operator, value, and unit."},
+        {"name": "forbidden_disclosures", "type": "List[str]", "description": "Information the agent must never share (credit card, SSN, etc.)."},
+        {"name": "special_notes", "type": "Optional[str]", "description": "Additional freeform notes from the user's prompt."}
+      ]
+    },
+    {
+      "entity_name": "TurnDecision",
+      "defined_in": "models.py:52",
+      "fields": [
+        {"name": "is_dealbreaker", "type": "bool", "description": "True when the receptionist violates a constraint or requests forbidden data."},
+        {"name": "call_completed", "type": "bool", "description": "True when the booking/order is confirmed or call ends."},
+        {"name": "violation_parameter", "type": "Optional[str]", "description": "The violated constraint name, e.g. 'price'."},
+        {"name": "violation_reason", "type": "Optional[str]", "description": "Human-readable Red Card reason."},
+        {"name": "immediate_stalling_phrase", "type": "Optional[str]", "description": "Phrase spoken immediately to keep receptionist waiting."},
+        {"name": "suggested_user_options", "type": "Optional[List[str]]", "description": "2-4 actionable choices surfaced on the Human-in-the-Loop UI card."},
+        {"name": "draft_response", "type": "Optional[str]", "description": "Next agent utterance (safe turn) or initial counter-offer text (dealbreaker)."}
+      ]
+    },
+    {
+      "entity_name": "StagedResponse",
+      "defined_in": "models.py:97",
+      "fields": [
+        {"name": "english_response", "type": "str", "description": "Exact English phrase agent will speak after approval."},
+        {"name": "translated_response", "type": "str", "description": "Same phrase in the user's preferred language for verification."},
+        {"name": "action_summary", "type": "str", "description": "One-line ledger entry, e.g. 'Counter-offer drafted for Sunday appointment'."}
+      ]
+    },
+    {
+      "entity_name": "FinalSummary",
+      "defined_in": "models.py:108",
+      "fields": [
+        {"name": "outcome_headline", "type": "str", "description": "Bold executive headline of call result."},
+        {"name": "outcome_subtext", "type": "str", "description": "One-sentence logistics/payment status description."},
+        {"name": "confirmed_items", "type": "List[str]", "description": "Facts explicitly agreed upon during the conversation."},
+        {"name": "unresolved_items", "type": "List[str]", "description": "Open questions or ambiguities the call did not resolve."}
+      ]
+    },
+    {
+      "entity_name": "UserDecisionAction",
+      "defined_in": "models.py:88",
+      "fields": [
+        {"name": "chosen_action", "type": "str", "description": "Option selected by the human from the Red Decision Card."},
+        {"name": "custom_instruction", "type": "Optional[str]", "description": "Free-text instruction if the user chose 'Type my own response'."}
+      ]
+    }
+  ],
+
+  "endpoints_or_interfaces": [
+    {"identifier": "POST /api/session/create", "type": "http_endpoint", "summary": "Initialise a negotiation session", "details": "Parses raw_prompt via LLM into ExtractedRules; stores new session in sessiondb; returns session_id and extracted_rules."},
+    {"identifier": "GET /api/session/{session_id}/status", "type": "http_endpoint", "summary": "Poll session state", "details": "Returns status (READY_TO_START | IN_PROGRESS | DECISION_REQUIRED | AWAITING_APPROVAL | COMPLETED), pending_draft, and decision_ledger."},
+    {"identifier": "POST /api/session/{session_id}/evaluate-turn", "type": "http_endpoint", "summary": "Submit text utterance for evaluation", "details": "Body: IncomingCallerTurn { caller_text }. Returns TurnDecision and new session status."},
+    {"identifier": "POST /api/session/{session_id}/audio-turn", "type": "http_endpoint", "summary": "Submit audio for transcription + evaluation", "details": "Multipart form-data with 'file' field. Transcribes via AssemblyAI (Groq Whisper fallback), then evaluates."},
+    {"identifier": "POST /api/session/{session_id}/user-action", "type": "http_endpoint", "summary": "Record human counter-action", "details": "Body: UserDecisionAction. Calls generate_staged_draft(); sets status to AWAITING_APPROVAL; appends ledger entry."},
+    {"identifier": "POST /api/session/{session_id}/approve", "type": "http_endpoint", "summary": "Approve staged draft and resume call", "details": "Clears pending_draft, appends agent turn to transcript, sets status to IN_PROGRESS. Returns speak_text for TTS."},
+    {"identifier": "POST /api/session/{session_id}/complete", "type": "http_endpoint", "summary": "End call and generate audit report", "details": "Sets status=COMPLETED; calls generate_call_summary(). Returns FinalSummary."},
+    {"identifier": "GET /api/models", "type": "http_endpoint", "summary": "List available Groq models", "details": "Calls client.models.list() and returns array of model IDs."},
+    {"identifier": "WS /ws/call/{session_id}", "type": "websocket", "summary": "Real-time bidirectional call channel", "details": "Inbound: TRANSCRIPTION_CHUNK, USER_ACTION, APPROVE_AND_SPEAK, END_CALL. Outbound: SPEAK_PHRASE, DECISION_REQUIRED, STAGING_UPDATE, CALL_SUMMARY."}
+  ],
+
+  "file_system_directory": [
+    {
+      "directory": "./",
+      "purpose": "All application source lives flat in the project root — no subdirectory layering.",
+      "key_files": [
+        {"file": "app.py", "role": "FastAPI application — route handlers, session state machine, CORS middleware", "loc": 345},
+        {"file": "engine.py", "role": "LLM orchestration — Groq client, all prompt-building and inference calls, AssemblyAI + Whisper transcription", "loc": 260},
+        {"file": "models.py", "role": "Pydantic v2 data models for all request/response contracts", "loc": 125},
+        {"file": "tts_player.py", "role": "Edge TTS synthesis and PowerShell-based audio playback", "loc": 68},
+        {"file": "test_mic_caller.py", "role": "Interactive CLI test harness — mic recording, HTTP orchestration, human-in-the-loop decision prompts", "loc": 261},
+        {"file": "list_models.py", "role": "Standalone debug script to enumerate available Groq models", "loc": 24}
+      ]
+    }
+  ],
+
+  "setup_and_verification_playbook": {
+    "prerequisites": ["Python >= 3.10", "pip", "Git", "Windows (TTS playback uses PowerShell MediaPlayer)", "Groq API key", "AssemblyAI API key (optional)"],
+    "commands": [
+      {"step": 1, "title": "Clone Repository", "command": "git clone https://github.com/Shariq-duet/CallBridge.git && cd CallBridge"},
+      {"step": 2, "title": "Create & Activate Virtual Environment", "command": "python -m venv venv && venv\\Scripts\\activate"},
+      {"step": 3, "title": "Install Dependencies", "command": "pip install --upgrade pip && pip install -r requirements.txt"},
+      {"step": 4, "title": "Configure Environment Variables", "command": "copy .env.example .env\n# Edit .env: set GROQ_API_KEY, GROQ_MODEL, ASSEMBLYAI_API_KEY"},
+      {"step": 5, "title": "Start Backend Server", "command": "uvicorn app:app --reload --port 8000"},
+      {"step": 6, "title": "Verify API is Live", "command": "curl http://127.0.0.1:8000/api/models"},
+      {"step": 7, "title": "Run Interactive Test Client", "command": "python test_mic_caller.py"},
+      {"step": 8, "title": "Explore Swagger Docs", "command": "start http://127.0.0.1:8000/docs"}
+    ]
+  }
+}
