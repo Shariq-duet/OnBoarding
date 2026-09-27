@@ -649,7 +649,8 @@ return FinalSummary(**raw_json)</code></pre></div></div></div>
   function buildCardIndex() {
     var index = [];
     document.querySelectorAll('[id^="stage-"]').forEach(function(card) {
-      var terms = [card.id.replace('stage-', '')];
+      var rawId = card.id.replace('stage-', '');
+      var terms = [rawId];
       // Target the semantic class names used by visualizer.py's build_flow_cards()
       var step = card.querySelector('.step-badge');
       var name = card.querySelector('.flow-card-name');
@@ -659,20 +660,59 @@ return FinalSummary(**raw_json)</code></pre></div></div></div>
       if (name) terms.push(name.textContent.trim().toLowerCase());
       if (mod)  terms.push(mod.textContent.trim().toLowerCase());
       if (sym)  terms.push(sym.textContent.trim().toLowerCase());
+      // Also add individual significant words from the card name for partial matching
+      if (name) {
+        var words = name.textContent.trim().toLowerCase().split(/[\s&,\-—]+/).filter(function(w){ return w.length > 3; });
+        words.forEach(function(w){ terms.push(w); });
+      }
       index.push({ cardId: card.id, terms: terms });
     });
     return index;
   }
 
-  function findCard(label, index) {
-    var norm = label.toLowerCase().replace(/\s+/g,' ').trim();
-    if (!norm) return null;
+  function findCard(label, nodeId, index) {
+    var norm = label.toLowerCase().replace(/[\n\r]+/g, ' ').replace(/\s+/g,' ').trim();
+    if (!norm && !nodeId) return null;
+    var normId = nodeId ? nodeId.toLowerCase().replace(/[\n\r]+/g, ' ').replace(/\s+/g,' ').trim() : '';
+
+    // Pass 1: exact stage-id match from the Mermaid node's own ID attribute
+    // (Mermaid assigns IDs like "flowchart-B1-123" based on the node key in the graph definition)
     for (var i = 0; i < index.length; i++) {
       for (var j = 0; j < index[i].terms.length; j++) {
         var t = index[i].terms[j];
-        if (t && (norm.includes(t) || t.includes(norm))) return index[i].cardId;
+        if (t && normId && normId.includes(t)) return index[i].cardId;
       }
     }
+
+    // Pass 2: substring match on the visible label text
+    if (norm) {
+      for (var i = 0; i < index.length; i++) {
+        for (var j = 0; j < index[i].terms.length; j++) {
+          var t = index[i].terms[j];
+          if (t && t.length > 3 && (norm.includes(t) || t.includes(norm))) return index[i].cardId;
+        }
+      }
+    }
+
+    // Pass 3: word overlap — match if ≥2 significant words overlap
+    if (norm) {
+      var labelWords = norm.split(/[\s\/\(\)\[\]\{\}.,;:&\-—]+/).filter(function(w){ return w.length > 3; });
+      for (var i = 0; i < index.length; i++) {
+        var overlap = 0;
+        for (var j = 0; j < index[i].terms.length; j++) {
+          var t = index[i].terms[j];
+          if (!t || t.length <= 3) continue;
+          for (var k = 0; k < labelWords.length; k++) {
+            if (labelWords[k] === t || labelWords[k].includes(t) || t.includes(labelWords[k])) {
+              overlap++;
+              break;
+            }
+          }
+        }
+        if (overlap >= 2) return index[i].cardId;
+      }
+    }
+
     return null;
   }
 
@@ -691,18 +731,58 @@ return FinalSummary(**raw_json)</code></pre></div></div></div>
     }, 320);
   }
 
+  // ── Collect the visible text of a Mermaid node <g> element ──
+  function getNodeLabel(node) {
+    // Mermaid v11 uses foreignObject with HTML labels inside <div> wrappers,
+    // or plain <text> elements for simpler labels.
+    var texts = [];
+    node.querySelectorAll('text, span, p, div, foreignObject').forEach(function(el) {
+      var t = el.textContent || '';
+      if (t.trim()) texts.push(t.trim());
+    });
+    // Deduplicate (foreignObject and its inner spans produce overlapping text)
+    var seen = new Set();
+    var unique = [];
+    texts.forEach(function(t) {
+      if (!seen.has(t)) { seen.add(t); unique.push(t); }
+    });
+    return unique.join(' ').replace(/\s+/g, ' ').trim();
+  }
+
   // ── Build a map of node element → cardId for hit-testing ──
   function buildNodeMap(svg) {
     var map = [];
     var index = buildCardIndex();
-    svg.querySelectorAll('g.node, g[class*="node"]').forEach(function(node) {
-      var label = Array.from(node.querySelectorAll('text,span,p,foreignObject'))
-        .map(function(el){ return el.textContent; }).join(' ')
-        .replace(/\s+/g,' ').trim();
-      var cardId = findCard(label, index);
+    // Broad selector: Mermaid v10+ uses "node default", "node clickable",
+    // or just "node" as class patterns on <g> elements
+    var nodeSelector = 'g.node, g.nodes > g, g[class*="node "], g[class*=" node"]';
+    var nodeElements = svg.querySelectorAll(nodeSelector);
+
+    // Fallback: if the broad selector found nothing, try finding any <g> with
+    // an id containing "flowchart-" — that's how Mermaid v11 names node groups
+    if (!nodeElements.length) {
+      nodeElements = svg.querySelectorAll('g[id*="flowchart-"]');
+    }
+
+    nodeElements.forEach(function(node) {
+      var label = getNodeLabel(node);
+      var nodeId = node.id || '';
+      var cardId = findCard(label, nodeId, index);
       if (!cardId) return;
+
+      // Mark the node for click detection
       node.style.cursor = 'pointer';
       node.setAttribute('data-card', cardId);
+
+      // Ensure pointer events reach the node even under svg-pan-zoom overlays
+      node.style.pointerEvents = 'all';
+
+      // Also mark child shapes (rect, polygon, circle) so they catch events
+      node.querySelectorAll('rect, polygon, circle, ellipse, path, foreignObject').forEach(function(shape) {
+        shape.style.pointerEvents = 'all';
+        shape.style.cursor = 'pointer';
+      });
+
       map.push({ el: node, cardId: cardId });
 
       // hover glow is safe — mouseenter/leave don't conflict with pan-zoom
@@ -713,7 +793,19 @@ return FinalSummary(**raw_json)</code></pre></div></div></div>
         node.style.filter = '';
       });
     });
+
     return map;
+  }
+
+  // ── Walk up from a DOM element to find the nearest ancestor with [data-card] ──
+  function findDataCardAncestor(el, boundary) {
+    while (el && el !== boundary) {
+      if (el.getAttribute && el.getAttribute('data-card')) {
+        return el.getAttribute('data-card');
+      }
+      el = el.parentElement || el.parentNode;
+    }
+    return null;
   }
 
   // ── Bootstrap pan-zoom after render ──
@@ -739,33 +831,66 @@ return FinalSummary(**raw_json)</code></pre></div></div></div>
     }
 
     // ── Click detection that survives svg-pan-zoom ────────────────────────────
-    // svg-pan-zoom captures pointerdown/up at the container level for dragging.
-    // Attaching a 'click' listener directly to <g class="node"> elements is
-    // unreliable because the library swallows those events during pan.
-    // Solution: track mousedown position on the CONTAINER, and on mouseup check
-    // if the pointer barely moved (≤ 4px). If so, it was a tap not a drag —
-    // walk up the DOM from the event target to find the nearest [data-card] node.
+    // svg-pan-zoom places an invisible overlay <rect> that intercepts pointer
+    // events for pan/drag. This means e.target in mouseup often points to the
+    // overlay, not the actual Mermaid node. We fix this with a two-pronged
+    // strategy:
+    //
+    //   1. Primary: use document.elementsFromPoint() to pierce through the
+    //      overlay and find the real Mermaid node underneath.
+    //   2. Fallback: walk up from e.target as before (works when overlay is
+    //      not present or in browsers without elementsFromPoint).
+    //
+    // We still track mousedown→mouseup distance to distinguish taps from drags.
+
     var nodeMap = buildNodeMap(svg);
     var downX = 0, downY = 0;
     var container = document.getElementById('diagram-container');
 
-    container.addEventListener('mousedown', function(e) {
+    container.addEventListener('pointerdown', function(e) {
       downX = e.clientX; downY = e.clientY;
-    });
+    }, { passive: true });
 
-    container.addEventListener('mouseup', function(e) {
+    container.addEventListener('pointerup', function(e) {
       var dx = e.clientX - downX, dy = e.clientY - downY;
       // Only treat as a click if the pointer moved ≤ 4px (not a drag)
       if (Math.sqrt(dx * dx + dy * dy) > 4) return;
 
-      // Walk up from the actual target to find the nearest node with data-card
-      var el = e.target;
-      while (el && el !== svg) {
-        if (el.getAttribute && el.getAttribute('data-card')) {
-          jumpToCard(el.getAttribute('data-card'));
-          return;
+      var cardId = null;
+
+      // Strategy 1: elementsFromPoint — pierce through all overlays
+      if (document.elementsFromPoint) {
+        var stack = document.elementsFromPoint(e.clientX, e.clientY);
+        for (var i = 0; i < stack.length && !cardId; i++) {
+          cardId = findDataCardAncestor(stack[i], svg);
         }
-        el = el.parentElement;
+      }
+
+      // Strategy 2: walk up from e.target (fallback)
+      if (!cardId) {
+        cardId = findDataCardAncestor(e.target, svg);
+      }
+
+      // Strategy 3: geometric hit-test against known node bounding boxes
+      if (!cardId && nodeMap.length > 0) {
+        var pt = svg.createSVGPoint();
+        pt.x = e.clientX;
+        pt.y = e.clientY;
+        try {
+          var svgPt = pt.matrixTransform(svg.getScreenCTM().inverse());
+          for (var i = 0; i < nodeMap.length; i++) {
+            var bbox = nodeMap[i].el.getBBox();
+            if (svgPt.x >= bbox.x && svgPt.x <= bbox.x + bbox.width &&
+                svgPt.y >= bbox.y && svgPt.y <= bbox.y + bbox.height) {
+              cardId = nodeMap[i].cardId;
+              break;
+            }
+          }
+        } catch(ex) { /* getScreenCTM/getBBox unavailable — skip */ }
+      }
+
+      if (cardId) {
+        jumpToCard(cardId);
       }
     });
 
@@ -786,7 +911,7 @@ return FinalSummary(**raw_json)</code></pre></div></div></div>
     document.getElementById('btn-zoom-out').addEventListener('click', function(){ if(pz) pz.zoomOut(); });
     document.getElementById('btn-reset').addEventListener('click',    function(){ if(pz){ pz.resetZoom(); pz.center(); } });
 
-    // node wiring is handled by buildNodeMap() + container mouseup above
+    // node wiring is handled by buildNodeMap() + container pointerup above
   });
 </script>
 
